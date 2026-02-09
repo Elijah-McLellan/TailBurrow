@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
@@ -10,6 +10,46 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import Masonry from "react-masonry-css";
+
+const TOAST_DURATION_MS = 4000;
+
+type Toast = {
+  id: number;
+  message: string;
+  type: 'info' | 'error' | 'success';
+};
+
+let toastIdCounter = 0;
+
+function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  if (toasts.length === 0) return null;
+  return createPortal(
+    <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 max-w-sm">
+      {toasts.map(toast => (
+        <div
+          key={toast.id}
+          className={`flex items-start gap-3 px-4 py-3 rounded-lg shadow-xl border backdrop-blur-sm animate-in slide-in-from-right fade-in duration-200 cursor-pointer ${
+            toast.type === 'error'
+              ? 'bg-red-900/90 border-red-700 text-red-100'
+              : toast.type === 'success'
+              ? 'bg-green-900/90 border-green-700 text-green-100'
+              : 'bg-gray-800/90 border-gray-600 text-gray-100'
+          }`}
+          onClick={() => onDismiss(toast.id)}
+        >
+          <span className="text-sm flex-1 break-words">{toast.message}</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDismiss(toast.id); }}
+            className="text-current opacity-60 hover:opacity-100 flex-shrink-0 mt-0.5"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ))}
+    </div>,
+    document.body
+  );
+}
 
 // ─── CONSTANTS ───────────────────────────────────────────────
 const HUD_TIMEOUT_MS = 2000;
@@ -82,6 +122,28 @@ type FASyncStatus = {
   imported: number; upgraded: number; errors: number; current_message: string;
 };
 type FACreds = { a: string; b: string };
+
+type E621Post = {
+  id: number;
+  file: { url: string | null; ext: string; md5: string; width: number; height: number };
+  preview: { url: string | null; width: number; height: number };
+  sample: { url: string | null; width: number; height: number };
+  score: { total: number };
+  fav_count: number;
+  rating: string;
+  created_at: string;
+  sources: string[];
+  is_favorited: boolean;
+  tags: {
+    general: string[];
+    species: string[];
+    character: string[];
+    artist: string[];
+    copyright: string[];
+    meta: string[];
+    lore: string[];
+  };
+};
 
 // ─── HELPERS ─────────────────────────────────────────────────
 function mapItemDto(r: ItemDto): LibraryItem {
@@ -263,6 +325,119 @@ function InfiniteSentinel({ onVisible, disabled }: { onVisible: () => void; disa
   return <div ref={ref} className="h-10 w-full" />;
 }
 
+const GridItem = React.memo(({ item, index, onSelect }: {
+  item: LibraryItem;
+  index: number;
+  onSelect: (index: number) => void;
+}) => {
+  const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
+
+  return (
+    <div
+      onClick={() => onSelect(index)}
+      className="relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-purple-500 transition-all"
+    >
+      {isVid ? (
+        <div className="relative">
+          <video
+            src={item.url}
+            className="w-full h-auto object-cover"
+            muted
+            loop
+            onMouseOver={e => { e.currentTarget.play().catch(() => {}); }}
+            onMouseOut={e => { e.currentTarget.pause(); }}
+          />
+          <div className="absolute top-2 right-2 bg-black/50 p-1 rounded-full">
+            <Play className="w-3 h-3 text-white" />
+          </div>
+        </div>
+      ) : (
+        <Thumbnail item={item} className="w-full h-auto object-cover" />
+      )}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${item.source === 'e621' ? 'bg-blue-600' : 'bg-orange-600'}`}>
+            {item.source === 'e621' ? 'E6' : 'FA'}
+          </span>
+          <span className="text-white text-sm font-medium truncate">
+            {(() => {
+              const artists = (item.artist && item.artist.length > 0)
+                ? item.artist
+                : item.tags_artist;
+              const filtered = (artists || []).filter(a =>
+                !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a)
+              );
+              return filtered.length > 0 ? filtered.join(", ") : "Unknown";
+            })()}
+          </span>
+        </div>
+        <div className="flex justify-between items-center text-xs text-gray-300 border-t border-white/20 pt-1">
+          <span>⭐ {item.fav_count || 0}</span>
+          <span className={`font-bold uppercase ${item.rating === 'e' ? 'text-red-400' : item.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
+            {item.rating || 'S'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, onOpenUrl }: {
+  post: E621Post;
+  feedId: number;
+  downloaded: boolean;
+  busy: boolean;
+  onFavorite: (feedId: number, post: E621Post) => void;
+  onOpenUrl: (url: string) => void;
+}) => {
+  const isRemoteFav = post.is_favorited;
+  const imageUrl = post.sample.url || post.file.url || post.preview.url;
+  const sourceUrl = `https://e621.net/posts/${post.id}`;
+  const artists = post.tags.artist;
+  const w = post.sample.width || post.file.width || 1;
+  const h = post.sample.height || post.file.height || 1;
+
+  return (
+    <div className="relative group bg-gray-700 rounded overflow-hidden">
+      {downloaded && (
+        <div className="absolute top-2 left-2 z-20 bg-gray-900/70 text-gray-200 px-2 py-1 rounded flex items-center gap-1">
+          <Database className="w-4 h-4" />
+        </div>
+      )}
+      {imageUrl ? (
+        <>
+          <img
+            src={imageUrl}
+            alt=""
+            className="w-full object-cover rounded"
+            style={{ aspectRatio: `${w} / ${h}` }}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+          <button
+            onClick={() => onFavorite(feedId, post)}
+            disabled={busy}
+            className={`absolute top-2 right-2 p-2 rounded-full transition z-20 ${isRemoteFav ? "bg-yellow-500 text-yellow-900" : "bg-gray-900/70 text-gray-300 hover:bg-gray-900/90"} ${busy ? "opacity-60 cursor-not-allowed" : ""}`}
+          >
+            {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Star className={`w-5 h-5 ${isRemoteFav ? "fill-current" : ""}`} />}
+          </button>
+          <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center gap-2 z-10 bg-black/50">
+            <p className="text-xs text-white">Score: {post.score.total} | ❤️ {post.fav_count}</p>
+            {artists.length > 0 && <p className="text-xs text-gray-300">{artists.slice(0, 2).join(", ")}</p>}
+            <button onClick={() => onOpenUrl(sourceUrl)} className="px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded text-xs text-white">
+              View Source
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="w-full h-48 flex items-center justify-center bg-gray-800">
+          <p className="text-gray-500 text-sm">No image</p>
+        </div>
+      )}
+    </div>
+  );
+});
+
 const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, setAutoscrollSpeed, hidden }: {
   active: boolean; autoscroll: boolean; setAutoscroll: (v: boolean) => void;
   autoscrollSpeed: number; setAutoscrollSpeed: (v: number) => void; hidden: boolean;
@@ -292,6 +467,20 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────
 export default function FavoritesViewer() {
+
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  const toast = useCallback((message: string, type: 'info' | 'error' | 'success' = 'info') => {
+    const id = ++toastIdCounter;
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, TOAST_DURATION_MS);
+  }, []);
   // --- STATE ---
   const [activeTab, setActiveTab] = useState('viewer');
   const [items, setItems] = useState<LibraryItem[]>([]);
@@ -311,7 +500,7 @@ export default function FavoritesViewer() {
 
   // Feeds
   const [feeds, setFeeds] = useState<Feed[]>([]);
-  const [feedPosts, setFeedPosts] = useState<Record<number, any[]>>({});
+  const [feedPosts, setFeedPosts] = useState<Record<number, E621Post[]>>({});
   const [loadingFeeds, setLoadingFeeds] = useState<Record<number, boolean>>({});
   const [newFeedQuery, setNewFeedQuery] = useState('');
   const [newFeedName, setNewFeedName] = useState('');
@@ -335,6 +524,10 @@ export default function FavoritesViewer() {
   const [itemsPerPage, setItemsPerPage] = useState(() => Number(localStorage.getItem('items_per_page') || 100));
   const loadingRef = useRef(false);
   const loadRequestIdRef = useRef(0); // For cancellation
+  const itemsRef = useRef<LibraryItem[]>([]);
+  const hasMoreRef = useRef(true);
+  const faSyncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadingFeedsRef = useRef<Record<number, boolean>>({});
 
   // e621
   const [feedActionBusy, setFeedActionBusy] = useState<Record<number, boolean>>({});
@@ -385,6 +578,18 @@ export default function FavoritesViewer() {
   const ext = (currentItem?.ext || "").toLowerCase();
   const isVideo = ext === "mp4" || ext === "webm";
 
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    hasMoreRef.current = hasMoreItems;
+  }, [hasMoreItems]);
+
+  useEffect(() => {
+    loadingFeedsRef.current = loadingFeeds;
+  }, [loadingFeeds]);
+
   const downloadedE621Ids = useMemo(
     () => new Set(items.filter(it => it.source === "e621").map(it => Number(it.source_id))),
     [items]
@@ -408,7 +613,7 @@ export default function FavoritesViewer() {
     const limit = overrides?.pageSize ?? itemsPerPage;
 
     try {
-      const offset = append ? items.length : 0;
+      const offset = append ? itemsRef.current.length : 0;
       const combinedSearch = [searchTags, ...selectedTags].join(" ").trim();
       const rows = await invoke<ItemDto[]>("list_items", {
         limit,
@@ -418,7 +623,6 @@ export default function FavoritesViewer() {
         order: sortOrder,
       });
 
-      // Stale check: if a newer request was issued, discard this result
       if (requestId !== loadRequestIdRef.current) return;
 
       if (!append) {
@@ -430,9 +634,12 @@ export default function FavoritesViewer() {
       setHasMoreItems(rows.length === limit);
       const mapped = rows.map(mapItemDto);
 
-      setItems(prev => append ? [...prev, ...mapped] : mapped);
+      setItems(prev => {
+        const next = append ? [...prev, ...mapped] : mapped;
+        itemsRef.current = next;
+        return next;
+      });
 
-      // Clamp currentIndex if needed
       if (!append) {
         setCurrentIndex(prev => {
           const newLen = mapped.length;
@@ -442,12 +649,12 @@ export default function FavoritesViewer() {
     } catch (error) {
       if (requestId !== loadRequestIdRef.current) return;
       console.error("Failed to load library:", error);
-      alert("Failed to load library. Please check your library settings.");
+      toast("Failed to load library. Please check your library settings.", "error");
     }
-  }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder, items.length]);
+  }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder]);
 
   const loadMoreItems = useCallback(async () => {
-    if (loadingRef.current || !hasMoreItems) return;
+    if (loadingRef.current || !hasMoreRef.current) return;
     loadingRef.current = true;
     setIsLoadingMore(true);
     try {
@@ -456,7 +663,7 @@ export default function FavoritesViewer() {
       setIsLoadingMore(false);
       loadingRef.current = false;
     }
-  }, [loadData, hasMoreItems]);
+  }, [loadData]);
 
   // --- HUD ---
   const scheduleHudHide = useCallback(() => {
@@ -503,7 +710,7 @@ export default function FavoritesViewer() {
 
   const startSync = useCallback(async () => {
     const n = parsePositiveInt(syncMaxNew);
-    if (n === undefined) { alert("Stop-after-N must be a positive number or blank."); return; }
+    if (n === undefined) { toast("Stop-after-N must be a positive number or blank.", "error"); return; }
     await invoke("e621_sync_start", { maxNewDownloads: n });
     syncWasRunningRef.current = true;
     await refreshSyncStatus();
@@ -529,7 +736,7 @@ export default function FavoritesViewer() {
     await invoke("e621_set_credentials", { username: apiUsername, apiKey });
     setApiKey("");
     await refreshE621CredInfo();
-    alert("Saved e621 credentials.");
+    toast("Saved e621 credentials.", "success");
   }, [apiUsername, apiKey, refreshE621CredInfo]);
 
   // --- FEEDS ---
@@ -558,73 +765,86 @@ export default function FavoritesViewer() {
 
     if (!e621CredInfo.username || !e621CredInfo.has_api_key) {
       if (!credWarned) {
-        alert("Set e621 credentials in Settings first.");
+        toast("Set e621 credentials in Settings first.", "error");
         setCredWarned(true);
       }
       return;
     }
 
-    if (loadingFeeds[feedId]) return;
-    if (!reset && (feedPaging[feedId]?.done || /\border:random\b/i.test(query))) return;
+    if (loadingFeedsRef.current[feedId]) return;
 
+    setFeedPaging(prev => {
+      const current = prev[feedId];
+      if (!reset && (current?.done || /\border:random\b/i.test(query))) return prev;
+      return prev;
+    });
+
+    if (!reset) {
+      const currentPaging = feedPaging[feedId];
+      if (currentPaging?.done || /\border:random\b/i.test(query)) return;
+    }
+
+    loadingFeedsRef.current = { ...loadingFeedsRef.current, [feedId]: true };
     setLoadingFeeds(prev => ({ ...prev, [feedId]: true }));
 
     try {
-      const pageParam = (reset ? null : feedPaging[feedId]?.beforeId) ? `b${feedPaging[feedId]?.beforeId}` : "1";
-      const data = await invoke<any>("e621_fetch_posts", { tags: query, limit: FEED_PAGE_LIMIT, page: pageParam });
+      const currentPaging = feedPaging[feedId];
+      const pageParam = (!reset && currentPaging?.beforeId) ? `b${currentPaging.beforeId}` : "1";
+      const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: query, limit: FEED_PAGE_LIMIT, page: pageParam });
       const rawPosts = data.posts || [];
 
       const blTags = blacklist.toLowerCase().split(/[\s\n]+/).filter(Boolean);
-      const filteredPosts = rawPosts.filter((post: any) => {
+      const filteredPosts = rawPosts.filter((post) => {
         if (blTags.length === 0) return true;
         const pTags = [
-          ...(post.tags.general || []), ...(post.tags.species || []),
-          ...(post.tags.character || []), ...(post.tags.artist || []),
-          ...(post.tags.copyright || []), ...(post.tags.meta || []),
-          ...(post.tags.lore || []),
+          ...post.tags.general, ...post.tags.species,
+          ...post.tags.character, ...post.tags.artist,
+          ...post.tags.copyright, ...post.tags.meta,
+          ...post.tags.lore,
         ];
-        return !pTags.some((t: string) => blTags.includes(t));
+        return !pTags.some((t) => blTags.includes(t));
       });
 
       setFeedPosts(prev => {
         const existing = reset ? [] : (prev[feedId] || []);
-        const uniqueMap = new Map();
-        [...existing, ...filteredPosts].forEach((p: any) => uniqueMap.set(p.id, p));
+        const uniqueMap = new Map<number, E621Post>();
+        [...existing, ...filteredPosts].forEach((p) => uniqueMap.set(p.id, p));
         return { ...prev, [feedId]: Array.from(uniqueMap.values()) };
       });
 
-      const minId = rawPosts.reduce((m: number, p: any) => Math.min(m, p.id), Number.POSITIVE_INFINITY);
+      const minId = rawPosts.reduce((m, p) => Math.min(m, p.id), Number.POSITIVE_INFINITY);
       setFeedPaging(prev => ({
         ...prev,
         [feedId]: {
-          beforeId: minId !== Number.POSITIVE_INFINITY ? minId : (feedPaging[feedId]?.beforeId ?? null),
+          beforeId: minId !== Number.POSITIVE_INFINITY ? minId : (prev[feedId]?.beforeId ?? null),
           done: rawPosts.length < FEED_PAGE_LIMIT,
         },
       }));
     } catch (e) {
       console.error('Error fetching feed:', e);
-      alert("Error fetching feed: " + (e instanceof Error ? e.message : String(e)));
+      toast("Error fetching feed: " + (e instanceof Error ? e.message : String(e)), "error");
     } finally {
+      loadingFeedsRef.current = { ...loadingFeedsRef.current, [feedId]: false };
       setLoadingFeeds(prev => ({ ...prev, [feedId]: false }));
     }
-  }, [e621CredInfo, credWarned, loadingFeeds, feedPaging, blacklist]);
+  }, [e621CredInfo, credWarned, feedPaging, blacklist]);
 
-  const ensureFavorite = useCallback(async (feedId: number, post: any) => {
-    const id = post.id as number;
+  const ensureFavorite = useCallback(async (feedId: number, post: E621Post) => {
+    const id = post.id;
     try {
       setFeedActionBusy(prev => ({ ...prev, [id]: true }));
       if (!downloadedE621Ids.has(id)) {
-        if (!post?.file?.url) throw new Error("This post has no original file URL (deleted/blocked).");
+        if (!post.file.url) throw new Error("This post has no original file URL (deleted/blocked).");
         await invoke("add_e621_post", {
           post: {
             id: post.id, file_url: post.file.url, file_ext: post.file.ext, file_md5: post.file.md5,
-            rating: post.rating, fav_count: post.fav_count, score_total: post.score?.total,
+            rating: post.rating, fav_count: post.fav_count, score_total: post.score.total,
             created_at: post.created_at, sources: post.sources || [],
             tags: {
-              general: post.tags?.general || [], species: post.tags?.species || [],
-              character: post.tags?.character || [], artist: post.tags?.artist || [],
-              meta: post.tags?.meta || [], lore: post.tags?.lore || [],
-              copyright: post.tags?.copyright || [],
+              general: post.tags.general, species: post.tags.species,
+              character: post.tags.character, artist: post.tags.artist,
+              meta: post.tags.meta, lore: post.tags.lore,
+              copyright: post.tags.copyright,
             },
           },
         });
@@ -633,10 +853,10 @@ export default function FavoritesViewer() {
       await invoke("e621_favorite", { postId: id });
       setFeedPosts(prev => ({
         ...prev,
-        [feedId]: (prev[feedId] || []).map((p: any) => p.id === id ? { ...p, is_favorited: true } : p),
+        [feedId]: (prev[feedId] || []).map((p) => p.id === id ? { ...p, is_favorited: true } : p),
       }));
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      toast(e instanceof Error ? e.message : String(e), "error");
     } finally {
       setFeedActionBusy(prev => ({ ...prev, [id]: false }));
     }
@@ -656,14 +876,21 @@ export default function FavoritesViewer() {
     await loadData(false);
   }, [refreshLibraryRoot, loadData]);
 
-  const toggleFullscreen = useCallback(() => {
+  const toggleFullscreen = useCallback(async () => {
     if (viewerOverlay) pokeHud();
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-    else document.exitFullscreen();
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (e) {
+      console.warn("Fullscreen request failed:", e);
+    }
   }, [viewerOverlay, pokeHud]);
 
   const openExternalUrl = useCallback(async (url: string) => {
-    try { await openUrl(url); } catch (e) { console.error("Failed to open URL:", e); alert("Failed to open link."); }
+    try { await openUrl(url); } catch (e) { console.error("Failed to open URL:", e); toast("Failed to open link.", "error"); }
   }, []);
 
   const handlePageSizeChange = useCallback(async (newSize: number) => {
@@ -746,7 +973,7 @@ export default function FavoritesViewer() {
       setShowEditModal(false);
     } catch (error) {
       console.error("Failed to save metadata:", error);
-      alert("Failed to save: " + String(error));
+      toast("Failed to save: " + String(error), "error");
     }
   }, [currentItem, editingTags, editingRating, editingSources]);
 
@@ -762,7 +989,7 @@ export default function FavoritesViewer() {
 
   const startFaSync = useCallback(async () => {
     if (!faCredsSet && (!faCreds.a || !faCreds.b)) {
-      alert("Please save cookies first.");
+      toast("Please save cookies first.", "error");
       return;
     }
     if (faCreds.a && faCreds.b) {
@@ -771,15 +998,23 @@ export default function FavoritesViewer() {
     }
 
     const n = parsePositiveInt(faLimit);
-    if (n === undefined) { alert("Limit must be a positive number or blank."); return; }
+    if (n === undefined) { toast("Limit must be a positive number or blank.", "error"); return; }
 
     await invoke("fa_start_sync", { limit: n });
 
-    const interval = setInterval(async () => {
+    // Clear any previous interval before starting a new one
+    if (faSyncIntervalRef.current) {
+      clearInterval(faSyncIntervalRef.current);
+    }
+
+    faSyncIntervalRef.current = setInterval(async () => {
       const st = await invoke<FASyncStatus>("fa_sync_status");
       setFaStatus(st);
       if (!st.running) {
-        clearInterval(interval);
+        if (faSyncIntervalRef.current) {
+          clearInterval(faSyncIntervalRef.current);
+          faSyncIntervalRef.current = null;
+        }
         loadData(false);
       }
     }, 1000);
@@ -864,7 +1099,22 @@ export default function FavoritesViewer() {
       if (activeTab === "viewer") {
         if (key === "a" || e.key === "ArrowLeft") { e.preventDefault(); goToPrev(true); }
         else if (key === "d" || e.key === "ArrowRight") { e.preventDefault(); goToNext(true); }
-        else if (key === "f") { e.preventDefault(); setViewerOverlay(v => !v); toggleFullscreen(); }
+        else if (key === "f") {
+          e.preventDefault();
+          (async () => {
+            try {
+              if (!document.fullscreenElement) {
+                await document.documentElement.requestFullscreen();
+                setViewerOverlay(true);
+              } else {
+                await document.exitFullscreen();
+                setViewerOverlay(false);
+              }
+            } catch (e) {
+              console.warn("Fullscreen request failed:", e);
+            }
+          })();
+        }
         else if (key === "m") { e.preventDefault(); setAutoMuteVideos(v => !v); }
         else if (key === "v") { e.preventDefault(); setWaitForVideoEnd(v => !v); }
         else if (key === "e") {
@@ -880,7 +1130,12 @@ export default function FavoritesViewer() {
 
   // HUD management
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
-  useEffect(() => { return () => { if (hudTimerRef.current) clearTimeout(hudTimerRef.current); }; }, []);
+  useEffect(() => {
+    return () => {
+      if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
+      if (faSyncIntervalRef.current) clearInterval(faSyncIntervalRef.current);
+    };
+  }, []);
 
   // Fullscreen exit handler
   useEffect(() => {
@@ -893,14 +1148,12 @@ export default function FavoritesViewer() {
   useEffect(() => { try { localStorage.setItem('preferred_sort_order', sortOrder); } catch { /* ignore */ } }, [sortOrder]);
   useEffect(() => { localStorage.setItem('blacklist_tags', blacklist); }, [blacklist]);
 
-  // Slideshow (removed currentIndex from deps to avoid timer reset)
+  // Slideshow (removed currentIndex from deps to avoid timer reset) uses timeout so video-wait is re-evaluated each slide
   useEffect(() => {
     if (!isSlideshow || itemCount === 0) return;
+    if (waitForVideoEnd && isVideo) return;
 
-    const isCurrentVideo = currentItem && ["mp4", "webm"].includes((currentItem.ext || "").toLowerCase());
-    if (waitForVideoEnd && isCurrentVideo) return;
-
-    const interval = setInterval(() => {
+    const timeout = setTimeout(() => {
       setFadeIn(false);
       setTimeout(() => {
         setCurrentIndex(prev => (prev + 1) % itemCount);
@@ -908,10 +1161,12 @@ export default function FavoritesViewer() {
       }, FADE_DURATION_MS);
     }, slideshowSpeed);
 
-    return () => clearInterval(interval);
-    // intentionally exclude currentItem to avoid timer reset per slide
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSlideshow, slideshowSpeed, itemCount, waitForVideoEnd]);
+    return () => clearTimeout(timeout);
+  }, [isSlideshow, slideshowSpeed, itemCount, waitForVideoEnd, isVideo, currentIndex]);
+
+  useEffect(() => {
+    setImageLoading(true);
+  }, [currentIndex]);
 
   // Image preloading (removed imageCache from deps to prevent loop)
   const imageCacheRef = useRef<Record<string, boolean>>({});
@@ -975,8 +1230,12 @@ export default function FavoritesViewer() {
   }, [autoscroll, autoscrollSpeed]);
 
   // --- RENDER HELPERS ---
-  const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || (activeTab === 'viewer' && viewMode === 'single');
+  const handleGridItemSelect = useCallback((index: number) => {
+    setCurrentIndex(index);
+    setViewMode('single');
+  }, []);
 
+  const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || (activeTab === 'viewer' && viewMode === 'single');
   // --- RENDER ---
   return (
     <div className="min-h-screen bg-gray-900 text-white">
@@ -1058,41 +1317,14 @@ export default function FavoritesViewer() {
                     className="flex w-auto gap-3"
                     columnClassName="flex flex-col gap-3"
                   >
-                    {items.map((item, index) => {
-                      const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
-                      return (
-                        <div
-                          key={item.item_id}
-                          onClick={() => { setCurrentIndex(index); setViewMode('single'); }}
-                          className="relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-purple-500 transition-all"
-                        >
-                          {isVid ? (
-                            <div className="relative">
-                              <video src={item.url} className="w-full h-auto object-cover" muted loop onMouseOver={e => e.currentTarget.play()} onMouseOut={e => e.currentTarget.pause()} />
-                              <div className="absolute top-2 right-2 bg-black/50 p-1 rounded-full"><Play className="w-3 h-3 text-white" /></div>
-                            </div>
-                          ) : (
-                            <Thumbnail item={item} className="w-full h-auto object-cover" />
-                          )}
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none">
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${item.source === 'e621' ? 'bg-blue-600' : 'bg-orange-600'}`}>
-                                {item.source === 'e621' ? 'E6' : 'FA'}
-                              </span>
-                              <span className="text-white text-sm font-medium truncate">
-                                {(item.artist && item.artist.length > 0) ? item.artist.join(", ") : "Unknown"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center text-xs text-gray-300 border-t border-white/20 pt-1">
-                              <span>⭐ {item.fav_count || 0}</span>
-                              <span className={`font-bold uppercase ${item.rating === 'e' ? 'text-red-400' : item.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
-                                {item.rating || 'S'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {items.map((item, index) => (
+                      <GridItem
+                        key={item.item_id}
+                        item={item}
+                        index={index}
+                        onSelect={handleGridItemSelect}
+                      />
+                    ))}
                   </Masonry>
                   {hasMoreItems && (
                     <InfiniteSentinel onVisible={loadMoreItems} disabled={isLoadingMore} />
@@ -1134,7 +1366,6 @@ export default function FavoritesViewer() {
                                 className={`w-full h-auto object-contain transition-opacity duration-300 ${viewerOverlay ? 'max-h-full' : 'max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
                                 style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
                                 onLoadedData={(e) => { if (!autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
-                                onLoadStart={() => setImageLoading(true)}
                                 onError={() => { setImageLoading(false); console.error("Video load error"); }}
                                 onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
                               />
@@ -1145,7 +1376,6 @@ export default function FavoritesViewer() {
                                 alt="Favorite"
                                 className={`w-full h-auto object-contain transition-opacity duration-200 ${viewerOverlay ? 'max-h-full' : 'max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
                                 onLoad={() => setImageLoading(false)}
-                                onLoadStart={() => setImageLoading(true)}
                                 onError={(e) => {
                                   setImageLoading(false);
                                   e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E";
@@ -1179,7 +1409,19 @@ export default function FavoritesViewer() {
                                 </select>
                                 <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-2 rounded ${autoMuteVideos ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-700 hover:bg-gray-600'}`} title="Mute all videos">{autoMuteVideos ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}</button>
                                 <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-2 rounded ${waitForVideoEnd ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-700 hover:bg-gray-600'}`} title="Wait for videos to finish"><Clock className="w-5 h-5" /></button>
-                                <button onClick={() => { setViewerOverlay(v => !v); toggleFullscreen(); }} className="p-2 bg-gray-700 hover:bg-gray-600 rounded" title={viewerOverlay ? "Exit full viewer" : "Full viewer"}><Maximize className="w-5 h-5" /></button>
+                                <button onClick={async () => {
+                                  try {
+                                    if (!document.fullscreenElement) {
+                                      await document.documentElement.requestFullscreen();
+                                      setViewerOverlay(true);
+                                    } else {
+                                      await document.exitFullscreen();
+                                      setViewerOverlay(false);
+                                    }
+                                  } catch (e) {
+                                    console.warn("Fullscreen request failed:", e);
+                                  }
+                                }} className="p-2 bg-gray-700 hover:bg-gray-600 rounded" title={viewerOverlay ? "Exit full viewer" : "Full viewer"}><Maximize className="w-5 h-5" /></button>                                
                                 {!viewerOverlay && <button onClick={deleteCurrentItem} className="p-2 bg-gray-700 hover:bg-red-600 rounded text-gray-400 hover:text-white transition-colors" title="Move to trash"><Trash2 className="w-5 h-5" /></button>}
                                 {!viewerOverlay && <button onClick={() => goToNext(true)} className="p-2 bg-gray-700 hover:bg-gray-600 rounded"><ChevronRight className="w-5 h-5" /></button>}
                               </div>
@@ -1360,41 +1602,17 @@ export default function FavoritesViewer() {
                     {feedPosts[feed.id] && feedPosts[feed.id].length > 0 ? (
                       <>
                         <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
-                          {feedPosts[feed.id].map((post: any) => {
-                            const busy = !!feedActionBusy[post.id];
-                            const isRemoteFav = !!post.is_favorited;
-                            const imageUrl = post.sample?.url || post.file?.url || post.preview?.url;
-                            const sourceUrl = `https://e621.net/posts/${post.id}`;
-                            const artists = post.tags?.artist || [];
-                            const w = post.sample?.width || post.file?.width || 1;
-                            const h = post.sample?.height || post.file?.height || 1;
-                            return (
-                              <div key={post.id} className="relative group bg-gray-700 rounded overflow-hidden">
-                                {downloadedE621Ids.has(post.id) && (
-                                  <div className="absolute top-2 left-2 z-20 bg-gray-900/70 text-gray-200 px-2 py-1 rounded flex items-center gap-1"><Database className="w-4 h-4" /></div>
-                                )}
-                                {imageUrl ? (
-                                  <>
-                                    <img src={imageUrl} alt="" className="w-full object-cover rounded" style={{ aspectRatio: `${w} / ${h}` }} loading="lazy" referrerPolicy="no-referrer" />
-                                    <button
-                                      onClick={() => ensureFavorite(feed.id, post)}
-                                      disabled={busy}
-                                      className={`absolute top-2 right-2 p-2 rounded-full transition z-20 ${isRemoteFav ? "bg-yellow-500 text-yellow-900" : "bg-gray-900/70 text-gray-300 hover:bg-gray-900/90"} ${busy ? "opacity-60 cursor-not-allowed" : ""}`}
-                                    >
-                                      {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Star className={`w-5 h-5 ${isRemoteFav ? "fill-current" : ""}`} />}
-                                    </button>
-                                    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center gap-2 z-10 bg-black/50">
-                                      <p className="text-xs text-white">Score: {post.score?.total || 0} | ❤️ {post.fav_count || 0}</p>
-                                      {artists.length > 0 && <p className="text-xs text-gray-300">{artists.slice(0, 2).join(", ")}</p>}
-                                      <button onClick={() => openExternalUrl(sourceUrl)} className="px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded text-xs text-white">View Source</button>
-                                    </div>
-                                  </>
-                                ) : (
-                                  <div className="w-full h-48 flex items-center justify-center bg-gray-800"><p className="text-gray-500 text-sm">No image</p></div>
-                                )}
-                              </div>
-                            );
-                          })}
+                          {feedPosts[feed.id].map((post) => (
+                            <FeedPostItem
+                              key={post.id}
+                              post={post}
+                              feedId={feed.id}
+                              downloaded={downloadedE621Ids.has(post.id)}
+                              busy={!!feedActionBusy[post.id]}
+                              onFavorite={ensureFavorite}
+                              onOpenUrl={openExternalUrl}
+                            />
+                          ))}
                         </Masonry>
                         <InfiniteSentinel
                           disabled={!e621CredInfo.username || !e621CredInfo.has_api_key || !!loadingFeeds[feed.id] || !!feedPaging[feed.id]?.done}
@@ -1440,7 +1658,7 @@ export default function FavoritesViewer() {
                     <button onClick={() => { setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(false); setEditingFeedId(null); }} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded">Cancel</button>
                     <button
                       onClick={() => {
-                        if (!newFeedQuery.trim()) { alert('Please enter a search query'); return; }
+                        if (!newFeedQuery.trim()) { toast("Please enter a search query.", "error"); return; }
                         if (editingFeedId) {
                           saveFeeds(feeds.map(f => f.id === editingFeedId ? { ...f, name: newFeedName.trim() || newFeedQuery, query: newFeedQuery.trim() } : f));
                         } else {
@@ -1493,7 +1711,7 @@ export default function FavoritesViewer() {
                         setShowSettings(false);
                       } catch (e) {
                         console.error("Failed to unload:", e);
-                        alert("Failed to unload: " + String(e));
+                        toast("Failed to unload: " + String(e), "error");
                       }
                     }}
                     className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded"
@@ -1657,7 +1875,7 @@ export default function FavoritesViewer() {
                     <div className="flex gap-2">
                       <button
                         onClick={async () => {
-                          if (!faCreds.a || !faCreds.b) return alert("Enter both cookies");
+                          if (!faCreds.a || !faCreds.b) { toast("Enter both cookies.", "error"); return; }
                           await invoke("fa_set_credentials", { a: faCreds.a, b: faCreds.b });
                           setFaCredsSet(true);
                           await refreshFaCreds();
@@ -1844,6 +2062,7 @@ export default function FavoritesViewer() {
         setAutoscrollSpeed={setAutoscrollSpeed}
         hidden={shouldHideAutoscroll}
       />
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
