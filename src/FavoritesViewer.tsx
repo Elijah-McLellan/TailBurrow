@@ -1197,7 +1197,7 @@ export default function FavoritesViewer() {
                   )}
                 </div>
                 <div className="lg:col-span-1">
-                  <div className="bg-gray-800 rounded-lg p-4 h-full max-h-[80vh] overflow-y-auto">
+                  <div className="bg-gray-800 rounded-lg p-4 sticky top-4 h-[calc(100vh-2rem)] overflow-y-auto">
                     {/* If in Single View, show tags for THIS item */}
                     {viewMode === 'single' && currentItem ? (
                       <>

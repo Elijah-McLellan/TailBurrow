@@ -1289,7 +1289,7 @@ pub fn list_items(
             tags_species: t_spe,
             tags_meta: t_met,
             tags_lore: t_lor,
-            sources: split_tab(r.get(13).unwrap_or_default()),
+            sources: split_tab(r.get(12).unwrap_or_default()),
         })
     }).map_err(|e| e.to_string())?;
 
