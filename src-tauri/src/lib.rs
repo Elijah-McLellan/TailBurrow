@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod library;
 pub mod fa; 
+mod secrets;
 
 use tauri::Manager; 
 use tauri_plugin_fs::FsExt;
@@ -15,19 +16,27 @@ pub fn run() {
     .plugin(tauri_plugin_fs::init())
     .manage(Arc::new(Mutex::new(commands::SyncState::default())))
     .manage(crate::fa::FAState::new())
+    .manage(crate::db::DbPool::new())
     .setup(|app| {
-      let handle = app.handle().clone();
+      let config_dir = app.path().app_config_dir().expect("Failed to get config dir");
+      crate::secrets::init(config_dir);
 
-      if let Ok(cfg) = crate::config::load_config(&handle) {
-        if let Some(root) = cfg.library_root {
-          let root = std::path::PathBuf::from(root);
+      // Load DB if library root is already set
+      if let Ok(cfg) = crate::config::load_config(&app.handle()) {
+          if let Some(root) = cfg.library_root {
+              let root_path = std::path::PathBuf::from(&root);
+              if root_path.exists() {
+                  let pool = app.state::<crate::db::DbPool>();
+                  if let Err(e) = pool.set_path(crate::library::db_path(&root_path)) {
+                      eprintln!("Failed to load database: {}", e);
+                  }
 
-          // Re-apply scopes on startup
-          let _ = handle.fs_scope().allow_directory(&root, true);
-          let _ = handle.asset_protocol_scope().allow_directory(&root, true);
-        }
+                  // Allow filesystem access for existing library
+                  let _ = app.fs_scope().allow_directory(&root_path, true);
+                  let _ = app.asset_protocol_scope().allow_directory(&root_path, true);
+              }
+          }
       }
-
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -48,6 +57,7 @@ pub fn run() {
       commands::empty_trash,
       commands::auto_clean_trash,
       commands::fa_get_cred_info,
+      commands::fa_clear_credentials,
       commands::update_item_rating,
       commands::update_item_sources,
       commands::get_trash_count,

@@ -1,6 +1,6 @@
 use crate::{config, db, library};
 use chrono::Utc;
-use rusqlite::{params, Connection, Row, OptionalExtension};
+use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use tauri::AppHandle;
@@ -17,30 +17,14 @@ pub fn get_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
   Ok(PathBuf::from(root))
 }
 
-fn open_conn_for_root(root: &PathBuf) -> Result<Connection, String> {
-  let conn = db::open(&library::db_path(root))?;
-  db::init_schema(&conn)?;
-  Ok(conn)
-}
-
-fn settings_get(conn: &Connection, key: &str) -> Result<Option<String>, String> {
-  let v: Option<String> = conn
-    .query_row(
-      "SELECT value FROM settings WHERE key=?",
-      params![key],
-      |r: &Row| r.get(0),
-    )
-    .optional()
-    .map_err(|e| e.to_string())?;
-  Ok(v)
-}
-
-fn settings_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
-  conn.execute(
-    "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-    params![key, value],
-  ).map_err(|e| e.to_string())?;
-  Ok(())
+fn with_db<F, T>(app: &tauri::AppHandle, f: F) -> Result<T, String>
+where
+    F: FnOnce(&Connection) -> Result<T, String>,
+{
+    let pool = app.state::<db::DbPool>();
+    let guard = pool.get()?;
+    let conn = guard.as_ref().unwrap(); // safe because get() checks for None
+    f(conn)
 }
 
 fn sanitize_slug(s: &str) -> String {
@@ -148,37 +132,36 @@ pub struct UnavailableDto {
 
 #[tauri::command]
 pub fn e621_unavailable_list(app: AppHandle, limit: u32) -> Result<Vec<UnavailableDto>, String> {
-  let root = get_root(&app)?;
-  let conn = db::open(&library::db_path(&root))?;
-  db::init_schema(&conn)?;
+  with_db(&app, |conn| {
 
-  let mut stmt = conn.prepare(
-    r#"
-    SELECT source, source_id, seen_at, reason, sources_json
-    FROM unavailable_posts
-    ORDER BY seen_at DESC
-    LIMIT ?
-    "#
-  ).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+      r#"
+      SELECT source, source_id, seen_at, reason, sources_json
+      FROM unavailable_posts
+      ORDER BY seen_at DESC
+      LIMIT ?
+      "#
+    ).map_err(|e| e.to_string())?;
 
-  let rows = stmt.query_map([limit], |r| {
-    let sources_json: String = r.get(4)?;
-    let sources: Vec<String> = serde_json::from_str(&sources_json).unwrap_or_default();
+    let rows = stmt.query_map([limit], |r| {
+      let sources_json: String = r.get(4)?;
+      let sources: Vec<String> = serde_json::from_str(&sources_json).unwrap_or_default();
 
-    Ok(UnavailableDto {
-      source: r.get(0)?,
-      source_id: r.get(1)?,
-      seen_at: r.get(2)?,
-      reason: r.get(3)?,
-      sources,
-    })
-  }).map_err(|e| e.to_string())?;
+      Ok(UnavailableDto {
+        source: r.get(0)?,
+        source_id: r.get(1)?,
+        seen_at: r.get(2)?,
+        reason: r.get(3)?,
+        sources,
+      })
+    }).map_err(|e| e.to_string())?;
 
-  let mut out = vec![];
-  for row in rows {
-    out.push(row.map_err(|e| e.to_string())?);
-  }
-  Ok(out)
+    let mut out = vec![];
+    for row in rows {
+      out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+  })
 }
 
 #[derive(Default)]
@@ -205,8 +188,8 @@ pub fn set_library_root(app: AppHandle, library_root: String) -> Result<Status, 
 
   library::ensure_layout(&root)?;
 
-  let conn = db::open(&library::db_path(&root))?;
-  db::init_schema(&conn)?;
+  let pool = app.state::<db::DbPool>();
+  pool.set_path(library::db_path(&root))?;
 
   // allow file access for chosen library root
   if let Err(e) = app.fs_scope().allow_directory(&root, true) {
@@ -228,129 +211,135 @@ pub fn set_library_root(app: AppHandle, library_root: String) -> Result<Status, 
 }
 
 #[tauri::command]
-pub fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status, String> {
-  let root = get_root(&app)?;
-  library::ensure_layout(&root)?;
+pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status, String> {
+    let root = get_root(&app)?;
+    library::ensure_layout(&root)?;
 
-  let conn = db::open(&library::db_path(&root))?;
-  db::init_schema(&conn)?;
+    // Open connection for deduplication checks
+    let conn = db::open(&library::db_path(&root))?;
+    db::init_schema(&conn)?;
 
-  // dedupe by (source, id)
-  let exists: i64 = conn
-    .query_row(
-      "SELECT COUNT(*) FROM items WHERE source='e621' AND source_id=? AND trashed_at IS NULL",
-      params![post.id.to_string()],
-      |r: &Row| r.get(0),
-    )
-    .map_err(|e| e.to_string())?;
-  if exists > 0 {
-    return Ok(Status { ok: true, message: "Already downloaded".into() });
-  }
-
-  // dedupe by md5 if present
-  if let Some(md5) = &post.file_md5 {
-    let md5_exists: i64 = conn
-      .query_row(
-        "SELECT COUNT(*) FROM items WHERE md5=? AND trashed_at IS NULL",
-        params![md5],
-        |r: &Row| r.get(0),
-      )
-      .map_err(|e| e.to_string())?;
-    if md5_exists > 0 {
-      return Ok(Status { ok: true, message: "Already downloaded (md5 match)".into() });
+    // Deduplicate by (source, id)
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM items WHERE source='e621' AND source_id=? AND trashed_at IS NULL",
+            params![post.id.to_string()],
+            |r: &Row| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+        
+    if exists > 0 {
+        return Ok(Status { ok: true, message: "Already downloaded".into() });
     }
-  }
 
-  // filename: primaryArtist_e621_<id>.<ext>
-  let primary_artist = sanitize_slug(&pick_primary_artist(&post.tags.artist));
-  let ext = post.file_ext.trim().to_lowercase();
-  if ext.is_empty() {
-    return Err("Missing file_ext from e621".into());
-  }
+    // Deduplicate by md5 if present
+    if let Some(md5) = &post.file_md5 {
+        let md5_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE md5=? AND trashed_at IS NULL",
+                params![md5],
+                |r: &Row| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        
+        if md5_exists > 0 {
+            return Ok(Status { ok: true, message: "Already downloaded (md5 match)".into() });
+        }
+    }
 
-  let base = format!("{primary_artist}_e621_{}.{}", post.id, ext);
-  let media_dir = root.join("media");
-  let mut filename = base.clone();
-  let mut dest_path = media_dir.join(&filename);
+    // Filename: primaryArtist_e621_<id>.<ext>
+    let primary_artist = sanitize_slug(&pick_primary_artist(&post.tags.artist));
+    let ext = post.file_ext.trim().to_lowercase();
+    
+    if ext.is_empty() {
+        return Err("Missing file_ext from e621".into());
+    }
 
-  // ensure unique filename
-  let mut n = 1;
-  while dest_path.exists() {
-    filename = format!("{primary_artist}_e621_{}_dup{}.{}", post.id, n, ext);
-    dest_path = media_dir.join(&filename);
-    n += 1;
-  }
+    let base = format!("{primary_artist}_e621_{}.{}", post.id, ext);
+    let media_dir = root.join("media");
+    let mut filename = base.clone();
+    let mut dest_path = media_dir.join(&filename);
 
-  // temp download
-  let tmp_dir = root.join(".cache").join("tmp");
-  fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
-  let tmp_path = tmp_dir.join(format!("{filename}.part"));
+    // Ensure unique filename
+    let mut n = 1;
+    while dest_path.exists() {
+        filename = format!("{primary_artist}_e621_{}_dup{}.{}", post.id, n, ext);
+        dest_path = media_dir.join(&filename);
+        n += 1;
+    }
 
-  let client = reqwest::blocking::Client::new();
-  let mut resp = client
-    .get(&post.file_url)
-    .header("User-Agent", "TailBurrow/0.2.2 (local archiver)")
-    .send()
-    .map_err(|e| e.to_string())?;
+    // Temp download
+    let tmp_dir = root.join(".cache").join("tmp");
+    fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let tmp_path = tmp_dir.join(format!("{filename}.part"));
 
-  if !resp.status().is_success() {
-    return Err(format!("Download failed: HTTP {}", resp.status()));
-  }
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&post.file_url)
+        .header("User-Agent", "TailBurrow/0.2.2 (local archiver)")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
 
-  let mut file = fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
-  std::io::copy(&mut resp, &mut file).map_err(|e| e.to_string())?;
-  file.flush().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", resp.status()));
+    }
 
-  fs::rename(&tmp_path, &dest_path).map_err(|e| e.to_string())?;
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let mut file = fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+    file.write_all(&bytes).map_err(|e| e.to_string())?;
+    file.flush().map_err(|e| e.to_string())?;
 
-  // --- NEW: Generate Thumbnail Immediately ---
-  let file_rel = format!("media/{}", filename.replace('\\', "/"));
-  generate_and_save_thumb(&root, &file_rel); // <--- Added this call
-  // -------------------------------------------
+    fs::rename(&tmp_path, &dest_path).map_err(|e| e.to_string())?;
 
-  let added_at = Utc::now().to_rfc3339();
+    // --- NEW: Generate Thumbnail Immediately ---
+    let file_rel = format!("media/{}", filename.replace('\\', "/"));
+    generate_and_save_thumb(&root, &file_rel); // <--- Added this call
+    // -------------------------------------------
 
-  conn.execute(
-    r#"
-    INSERT INTO items(source, source_id, md5, remote_url, file_rel, ext, rating, fav_count, score_total, created_at, added_at, primary_artist)
-    VALUES('e621', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    "#,
-    params![
-      post.id.to_string(),
-      post.file_md5,
-      post.file_url,
-      file_rel,
-      ext,
-      post.rating,
-      post.fav_count,
-      post.score_total,
-      post.created_at,
-      added_at,
-      primary_artist
-    ],
-  ).map_err(|e| e.to_string())?;
+    let added_at = Utc::now().to_rfc3339();
 
-  let item_id = conn.last_insert_rowid();
+    // Open mutable connection for inserts
+    let mut conn = db::open(&library::db_path(&root))?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-  // typed tags
-  for t in post.tags.general { let id = upsert_tag(&conn, &t, "general")?; conn.execute("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)", params![item_id, id]).map_err(|e| e.to_string())?; }
-  for t in post.tags.species { let id = upsert_tag(&conn, &t, "species")?; conn.execute("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)", params![item_id, id]).map_err(|e| e.to_string())?; }
-  for t in post.tags.character { let id = upsert_tag(&conn, &t, "character")?; conn.execute("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)", params![item_id, id]).map_err(|e| e.to_string())?; }
-  for t in post.tags.artist { let id = upsert_tag(&conn, &t, "artist")?; conn.execute("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)", params![item_id, id]).map_err(|e| e.to_string())?; }
-  for t in post.tags.meta { let id = upsert_tag(&conn, &t, "meta")?; conn.execute("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)", params![item_id, id]).map_err(|e| e.to_string())?; }
-  for t in post.tags.lore { let id = upsert_tag(&conn, &t, "lore")?; conn.execute("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)", params![item_id, id]).map_err(|e| e.to_string())?; }
-  for t in post.tags.copyright { let id = upsert_tag(&conn, &t, "copyright")?; conn.execute("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)", params![item_id, id]).map_err(|e| e.to_string())?; }
-
-  // sources urls
-  for u in post.sources {
-    let sid = upsert_source(&conn, &u)?;
-    conn.execute(
-      "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?, ?)",
-      params![item_id, sid],
+    tx.execute(
+        r#"
+        INSERT INTO items(source, source_id, md5, remote_url, file_rel, ext, rating, fav_count, score_total, created_at, added_at, primary_artist)
+        VALUES('e621', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+        params![
+            post.id.to_string(),
+            post.file_md5,
+            post.file_url,
+            file_rel,
+            ext,
+            post.rating,
+            post.fav_count,
+            post.score_total,
+            post.created_at,
+            added_at,
+            primary_artist
+        ],
     ).map_err(|e| e.to_string())?;
-  }
 
-  Ok(Status { ok: true, message: "Downloaded into library".into() })
+    let item_id = tx.last_insert_rowid();
+
+    // Typed tags
+    insert_tags_for_item(&tx, item_id, &post.tags)?;
+
+    // Source URLs
+    for u in &post.sources {
+        let sid = upsert_source(&tx, u)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?, ?)",
+            params![item_id, sid],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(Status { ok: true, message: "Downloaded into library".into() })
 }
 
 #[derive(Serialize)]
@@ -359,10 +348,10 @@ pub struct E621CredInfo {
   pub has_api_key: bool,
 }
 
-fn load_e621_creds(conn: &Connection) -> Result<(String, String), String> {
-  let username = settings_get(conn, "e621_username")?
+fn load_e621_creds() -> Result<(String, String), String> {
+  let username = crate::secrets::get_secret("e621_username")?
     .ok_or("e621 username not set")?;
-  let api_key = settings_get(conn, "e621_api_key")?
+  let api_key = crate::secrets::get_secret("e621_api_key")?
     .ok_or("e621 api key not set")?;
   Ok((username, api_key))
 }
@@ -391,46 +380,40 @@ fn upsert_unavailable(
 }
 
 #[tauri::command]
-pub fn e621_get_cred_info(app: AppHandle) -> Result<E621CredInfo, String> {
-  let root = get_root(&app)?;
-  let conn = open_conn_for_root(&root)?;
-  let username = settings_get(&conn, "e621_username")?;
-  let has_api_key = settings_get(&conn, "e621_api_key")?.is_some();
+pub fn e621_get_cred_info() -> Result<E621CredInfo, String> {
+  let username = crate::secrets::get_secret("e621_username")?;
+  let has_api_key = crate::secrets::get_secret("e621_api_key")?.is_some();
   Ok(E621CredInfo { username, has_api_key })
 }
 
 #[tauri::command]
-pub fn e621_set_credentials(app: AppHandle, username: String, api_key: String) -> Result<Status, String> {
-  let root = get_root(&app)?;
-  let conn = open_conn_for_root(&root)?;
-
+pub fn e621_set_credentials(username: String, api_key: String) -> Result<Status, String> {
   let u = username.trim();
   if u.is_empty() {
     return Err("Username cannot be empty".into());
   }
-  settings_set(&conn, "e621_username", u)?;
 
-  // allow leaving api_key blank to keep existing key
+  crate::secrets::set_secret("e621_username", u)?;
+
   if !api_key.trim().is_empty() {
-    settings_set(&conn, "e621_api_key", api_key.trim())?;
+    crate::secrets::set_secret("e621_api_key", api_key.trim())?;
   }
 
   Ok(Status { ok: true, message: "Saved e621 credentials".into() })
 }
 
 #[tauri::command]
-pub fn e621_test_connection(app: AppHandle) -> Result<Status, String> {
-  let root = get_root(&app)?;
-  let conn = open_conn_for_root(&root)?;
-  let (username, api_key) = load_e621_creds(&conn)?;
+pub async fn e621_test_connection() -> Result<Status, String> {
+  let (username, api_key) = load_e621_creds()?;
 
-  let client = reqwest::blocking::Client::new();
+  let client = reqwest::Client::new();
   let resp = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
     .header("User-Agent", "TailBurrow/0.2.2 (test)")
     .query(&[("limit", "1"), ("tags", "order:id_desc")])
     .send()
+    .await
     .map_err(|e| e.to_string())?;
 
   if !resp.status().is_success() {
@@ -441,12 +424,10 @@ pub fn e621_test_connection(app: AppHandle) -> Result<Status, String> {
 }
 
 #[tauri::command]
-pub fn e621_fetch_posts(app: AppHandle, tags: String, limit: u32, page: Option<String>) -> Result<serde_json::Value, String> {
-  let root = get_root(&app)?;
-  let conn = open_conn_for_root(&root)?;
-  let (username, api_key) = load_e621_creds(&conn)?;
+pub async fn e621_fetch_posts(tags: String, limit: u32, page: Option<String>) -> Result<serde_json::Value, String> {
+  let (username, api_key) = load_e621_creds()?;
 
-  let client = reqwest::blocking::Client::new();
+  let client = reqwest::Client::new();
   let mut req = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
@@ -457,12 +438,12 @@ pub fn e621_fetch_posts(app: AppHandle, tags: String, limit: u32, page: Option<S
     req = req.query(&[("page", p)]);
   }
 
-  let resp = req.send().map_err(|e| e.to_string())?;
+  let resp = req.send().await.map_err(|e| e.to_string())?;
   if !resp.status().is_success() {
     return Err(format!("e621 error: HTTP {}", resp.status()));
   }
 
-  resp.json::<serde_json::Value>().map_err(|e| e.to_string())
+  resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -510,17 +491,7 @@ pub fn e621_sync_start(
 
       // Load creds from DB settings (you already implemented e621 creds in settings)
       // This expects keys: e621_username, e621_api_key
-      let username: String = conn.query_row(
-        "SELECT value FROM settings WHERE key='e621_username'",
-        [],
-        |r: &Row| r.get(0),
-      ).map_err(|_| "e621 username not set")?;
-
-      let api_key: String = conn.query_row(
-        "SELECT value FROM settings WHERE key='e621_api_key'",
-        [],
-        |r: &Row| r.get(0),
-      ).map_err(|_| "e621 api key not set")?;
+      let (username, api_key) = load_e621_creds()?;
 
       let client = reqwest::blocking::Client::new();
 
@@ -570,6 +541,9 @@ pub fn e621_sync_start(
           let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
           st.status.scanned_pages += 1;
         }
+
+        // e621 API rules: max 2 requests/second
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
         if posts.is_empty() {
           break;
@@ -684,19 +658,21 @@ pub fn e621_sync_start(
             st.status.new_attempted += 1;
           }
 
-          match add_e621_post(app2.clone(), post_input) {
+          match tauri::async_runtime::block_on(add_e621_post(app2.clone(), post_input)) {
             Ok(_) => {
               let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
               st.status.downloaded_ok += 1;
             }
             Err(err) => {
-              // keep the sources in unavailable so the user can follow them
               upsert_unavailable(&conn, "e621", &post_id.to_string(), "download_failed", file_url.is_some().then(|| vec![]).unwrap_or_default())?;
               let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
               st.status.failed_downloads += 1;
               st.status.last_error = Some(err);
             }
           }
+
+          // e621 API rules: max 2 requests/second
+          std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
         page += 1;
@@ -719,12 +695,10 @@ pub fn e621_sync_start(
 }
 
 #[tauri::command]
-pub fn e621_favorite(app: AppHandle, post_id: i64) -> Result<Status, String> {
-  let root = get_root(&app)?;
-  let conn = open_conn_for_root(&root)?;
-  let (username, api_key) = load_e621_creds(&conn)?;
+pub async fn e621_favorite(post_id: i64) -> Result<Status, String> {
+  let (username, api_key) = load_e621_creds()?;
 
-  let client = reqwest::blocking::Client::new();
+  let client = reqwest::Client::new();
   let resp = client
     .post("https://e621.net/favorites.json")
     .basic_auth(username, Some(api_key))
@@ -732,9 +706,9 @@ pub fn e621_favorite(app: AppHandle, post_id: i64) -> Result<Status, String> {
     .header("Content-Type", "application/x-www-form-urlencoded")
     .body(format!("post_id={}", post_id))
     .send()
+    .await
     .map_err(|e| e.to_string())?;
 
-  // 422 = already favorited, acceptable for "ensure"
   if !resp.status().is_success() && resp.status().as_u16() != 422 {
     return Err(format!("Favorite failed: HTTP {}", resp.status()));
   }
@@ -743,20 +717,10 @@ pub fn e621_favorite(app: AppHandle, post_id: i64) -> Result<Status, String> {
 }
 
 #[tauri::command]
-pub fn fa_set_credentials(app: tauri::AppHandle, a: String, b: String) -> Result<(), String> {
-    let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("fa_creds.json");
-    
-    // Ensure the config directory exists!
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-    }
-
-    let json = serde_json::json!({ "a": a, "b": b });
-    std::fs::write(&path, json.to_string()).map_err(|e| e.to_string())?;
-    
-    Ok(())
+pub fn fa_set_credentials(a: String, b: String) -> Result<(), String> {
+  crate::secrets::set_secret("fa_cookie_a", &a)?;
+  crate::secrets::set_secret("fa_cookie_b", &b)?;
+  Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -765,107 +729,101 @@ pub struct FaCredInfo {
 }
 
 #[tauri::command]
-pub fn fa_get_cred_info(app: tauri::AppHandle) -> Result<FaCredInfo, String> {
-    let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("fa_creds.json");
-    Ok(FaCredInfo { has_creds: path.exists() })
+pub fn fa_get_cred_info() -> Result<FaCredInfo, String> {
+  let has_a = crate::secrets::get_secret("fa_cookie_a")?.is_some();
+  let has_b = crate::secrets::get_secret("fa_cookie_b")?.is_some();
+  Ok(FaCredInfo { has_creds: has_a && has_b })
 }
 
 #[tauri::command]
 pub fn fa_start_sync(app: tauri::AppHandle, limit: Option<u32>) -> Result<(), String> {
-    // Load creds
-    let path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("fa_creds.json");
-    if !path.exists() { return Err("No credentials set".into()); }
-    
-    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-    
-    let a = json["a"].as_str().unwrap_or("").to_string();
-    let b = json["b"].as_str().unwrap_or("").to_string();
+  let a = crate::secrets::get_secret("fa_cookie_a")?
+    .ok_or("FA cookie A not set")?;
+  let b = crate::secrets::get_secret("fa_cookie_b")?
+    .ok_or("FA cookie B not set")?;
 
-    let stop_after = limit.unwrap_or(0); // 0 = unlimited
+  let stop_after = limit.unwrap_or(0);
 
-    tauri::async_runtime::spawn(async move {
-        crate::fa::run_sync(app, a, b, stop_after).await;
-    });
+  tauri::async_runtime::spawn(async move {
+    crate::fa::run_sync(app, a, b, stop_after).await;
+  });
 
-    Ok(())
+  Ok(())
 }
 
 #[tauri::command]
 pub fn get_trash_count(app: tauri::AppHandle) -> Result<u32, String> {
-    let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
-    let count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM items WHERE trashed_at IS NOT NULL",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(0);
-    Ok(count)
+    with_db(&app, |conn| {
+        let count: u32 = conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE trashed_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        Ok(count)
+    })
 }
 
 #[tauri::command]
 pub fn get_trashed_items(app: tauri::AppHandle) -> Result<Vec<ItemDto>, String> {
     let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
+    with_db(&app, |conn| {
+      let mut stmt = conn.prepare(
+          r#"
+          SELECT
+            i.item_id, i.source, i.source_id, i.remote_url, i.file_rel, i.ext,
+            i.rating, i.fav_count, i.score_total, i.created_at, i.added_at,
+            '', '', '' -- We don't need tags/sources for the trash view usually
+          FROM items i
+          WHERE i.trashed_at IS NOT NULL
+          ORDER BY i.trashed_at DESC
+          "#
+      ).map_err(|e| e.to_string())?;
 
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT
-          i.item_id, i.source, i.source_id, i.remote_url, i.file_rel, i.ext,
-          i.rating, i.fav_count, i.score_total, i.created_at, i.added_at,
-          '', '', '' -- We don't need tags/sources for the trash view usually
-        FROM items i
-        WHERE i.trashed_at IS NOT NULL
-        ORDER BY i.trashed_at DESC
-        "#
-    ).map_err(|e| e.to_string())?;
+      let rows = stmt.query_map([], |r| {
+          let file_rel: String = r.get(4)?;
+          let file_abs = root.join(&file_rel);
+          
+          Ok(ItemDto {
+              item_id: r.get(0)?,
+              source: r.get(1)?,
+              source_id: r.get(2)?,
+              remote_url: r.get(3)?,
+              file_rel: file_rel,
+              file_abs: file_abs.to_string_lossy().to_string(),
+              ext: r.get(5)?,
+              rating: r.get(6)?,
+              fav_count: r.get(7)?,
+              score_total: r.get(8)?,
+              timestamp: r.get(9)?,
+              added_at: r.get(10)?,
+              tags_general: vec![],
+              tags_artist: vec![],
+              tags_copyright: vec![],
+              tags_character: vec![],
+              tags_species: vec![],
+              tags_meta: vec![],
+              tags_lore: vec![],
+              sources: vec![],
+          })
+      }).map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map([], |r| {
-        let file_rel: String = r.get(4)?;
-        let file_abs = root.join(&file_rel);
-        
-        Ok(ItemDto {
-            item_id: r.get(0)?,
-            source: r.get(1)?,
-            source_id: r.get(2)?,
-            remote_url: r.get(3)?,
-            file_rel: file_rel,
-            file_abs: file_abs.to_string_lossy().to_string(),
-            ext: r.get(5)?,
-            rating: r.get(6)?,
-            fav_count: r.get(7)?,
-            score_total: r.get(8)?,
-            timestamp: r.get(9)?,
-            added_at: r.get(10)?,
-            tags_general: vec![],
-            tags_artist: vec![],
-            tags_copyright: vec![],
-            tags_character: vec![],
-            tags_species: vec![],
-            tags_meta: vec![],
-            tags_lore: vec![],
-            sources: vec![],
-        })
-    }).map_err(|e| e.to_string())?;
-
-    let mut out = vec![];
-    for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
+      let mut out = vec![];
+      for row in rows {
+          out.push(row.map_err(|e| e.to_string())?);
+      }
+      Ok(out)
+    })
 }
 
 #[tauri::command]
 pub fn restore_item(app: tauri::AppHandle, item_id: i64) -> Result<(), String> {
-    let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
-    
-    conn.execute(
-        "UPDATE items SET trashed_at = NULL WHERE item_id = ?",
-        [item_id]
-    ).map_err(|e| e.to_string())?;
-    
-    Ok(())
+    with_db(&app, |conn| {
+        conn.execute(
+            "UPDATE items SET trashed_at = NULL WHERE item_id = ?",
+            [item_id]
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -918,6 +876,13 @@ pub fn fa_cancel_sync(state: tauri::State<FAState>) {
 }
 
 #[tauri::command]
+pub fn fa_clear_credentials() -> Result<(), String> {
+  crate::secrets::delete_secret("fa_cookie_a")?;
+  crate::secrets::delete_secret("fa_cookie_b")?;
+  Ok(())
+}
+
+#[tauri::command]
 pub fn clear_library_root(app: tauri::AppHandle) -> Result<(), String> {
     let path = app
         .path()
@@ -925,10 +890,12 @@ pub fn clear_library_root(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .join("config.json");
 
-    // Remove the config file entirely, or write an empty config
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
+
+    let pool = app.state::<db::DbPool>();
+    pool.clear();
 
     Ok(())
 }
@@ -975,40 +942,26 @@ pub fn update_item_tags(app: tauri::AppHandle, item_id: i64, tags: Vec<String>) 
 }
 
 #[tauri::command]
-pub fn e621_clear_credentials(app: tauri::AppHandle) -> Result<(), String> {
-    let path = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| e.to_string())?
-        .join("e621_credentials.json");
-
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
+pub fn e621_clear_credentials() -> Result<(), String> {
+  crate::secrets::delete_secret("e621_username")?;
+  crate::secrets::delete_secret("e621_api_key")?;
+  Ok(())
 }
 
 #[tauri::command]
 pub fn get_library_stats(app: tauri::AppHandle) -> Result<u32, String> {
-  let root = get_root(&app)?;
-  let conn = db::open(&library::db_path(&root))?;
-
-  let count: u32 = conn.query_row(
-    "SELECT COUNT(*) FROM items WHERE trashed_at IS NULL",
-    [],
-    |row| row.get(0),
-  ).map_err(|e| e.to_string())?;
-
-  Ok(count)
+    with_db(&app, |conn| {
+        let count: u32 = conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE trashed_at IS NULL",
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        Ok(count)
+    })
 }
 
 #[tauri::command]
 pub fn update_item_rating(app: tauri::AppHandle, item_id: i64, rating: String) -> Result<(), String> {
-    let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
-    
-    // rating must be 's', 'q', or 'e'
     let r = match rating.to_lowercase().as_str() {
         "s" | "safe" => "s",
         "q" | "questionable" => "q",
@@ -1016,15 +969,13 @@ pub fn update_item_rating(app: tauri::AppHandle, item_id: i64, rating: String) -
         _ => return Err("Invalid rating".into()),
     };
 
-        // Convert ID to string first so it lives long enough
-    let id_str = item_id.to_string();
-    
-    conn.execute(
-        "UPDATE items SET rating = ? WHERE item_id = ?",
-        rusqlite::params![r, id_str],
-    ).map_err(|e| e.to_string())?;
-    
-    Ok(())
+    with_db(&app, |conn| {
+        conn.execute(
+            "UPDATE items SET rating = ? WHERE item_id = ?",
+            rusqlite::params![r, item_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -1374,21 +1325,41 @@ pub async fn ensure_thumbnail(app: tauri::AppHandle, file_rel: String) -> Result
     }).await.map_err(|e| e.to_string())?
 }
 
-fn upsert_tag(conn: &Connection, name: &str, tag_type: &str) -> Result<i64, String> {
-  conn
-    .execute(
-      "INSERT INTO tags(name, type) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET type=excluded.type",
-      params![name, tag_type],
-    )
-    .map_err(|e| e.to_string())?;
+fn insert_tags_for_item(conn: &Connection, item_id: i64, tags: &E621Tags) -> Result<(), String> {
+    let categories: &[(&[String], &str)] = &[
+        (&tags.general, "general"),
+        (&tags.species, "species"),
+        (&tags.character, "character"),
+        (&tags.artist, "artist"),
+        (&tags.meta, "meta"),
+        (&tags.lore, "lore"),
+        (&tags.copyright, "copyright"),
+    ];
 
-  let id: i64 = conn
-    .query_row(
-      "SELECT tag_id FROM tags WHERE name=?",
-      params![name],
-      |r: &Row| r.get(0),
-    )
-    .map_err(|e| e.to_string())?;
+    for (tag_list, tag_type) in categories {
+        for t in *tag_list {
+            let id = upsert_tag(conn, t, tag_type)?;
+            conn.execute(
+                "INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)",
+                params![item_id, id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn upsert_tag(conn: &Connection, name: &str, tag_type: &str) -> Result<i64, String> {
+  conn.execute(
+    "INSERT INTO tags(name, type) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET type=excluded.type",
+    params![name, tag_type],
+  ).map_err(|e| e.to_string())?;
+
+  let id: i64 = conn.query_row(
+    "SELECT tag_id FROM tags WHERE name=?",
+    params![name],
+    |r: &Row| r.get(0),
+  ).map_err(|e| e.to_string())?;
 
   Ok(id)
 }
@@ -1415,18 +1386,14 @@ fn upsert_source(conn: &Connection, url: &str) -> Result<i64, String> {
 
 #[tauri::command]
 pub fn trash_item(app: tauri::AppHandle, item_id: i64) -> Result<(), String> {
-    let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
-    
-    // Soft delete: Set trashed_at to current timestamp
     let now = chrono::Local::now().to_rfc3339();
-    
-    conn.execute(
-        "UPDATE items SET trashed_at = ? WHERE item_id = ?",
-        [now, item_id.to_string()] // Convert i64 to string just in case, but params usually handles it
-    ).map_err(|e| e.to_string())?;
-    
-    Ok(())
+    with_db(&app, |conn| {
+        conn.execute(
+            "UPDATE items SET trashed_at = ? WHERE item_id = ?",
+            rusqlite::params![now, item_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 #[tauri::command]

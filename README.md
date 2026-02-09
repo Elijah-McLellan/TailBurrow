@@ -55,3 +55,28 @@ TailBurrow uses a **"Hybrid Upgrade"** strategy to ensure the best possible meta
 ## 📄 License
 
 [MIT](LICENSE)
+
+Todo:
+Guide me through how to fix
+Hardcoded User-Agent version
+empty_trash orphans junction rows
+N+1 subqueries in list_items
+Unify md5/file_md5 columns
+Centralize all DB access through DbPool; stop calling db::open() ad-hoc
+Fix TOCTOU race in add_e621_post (single-transaction check+insert)
+Reuse connections in FA sync loop instead of opening per-iteration
+Stream downloads to disk instead of buffering in memory
+Add HTTP timeouts to all clients
+Fix upsert_tag type-overwrite semantics
+Extract shared types into models.rs
+Add thumbnail cleanup to prune_expired_trash
+Return Result from generate_and_save_thumb
+Verify FA pagination logic
+Use bind params for LIMIT/OFFSET
+Harden sanitize_slug
+Remove or implement fts_items
+Add .part file cleanup on startup
+
+
+Solved:
+

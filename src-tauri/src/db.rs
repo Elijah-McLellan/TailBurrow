@@ -1,5 +1,7 @@
 use rusqlite::Connection;
 use std::path::Path;
+use std::sync::Mutex;
+use std::path::PathBuf;
 
 pub fn open(db_path: &Path) -> Result<Connection, String> {
   let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
@@ -106,4 +108,40 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
   }
 
   Ok(())
+}
+
+
+pub struct DbPool {
+    conn: Mutex<Option<Connection>>,
+    path: Mutex<Option<PathBuf>>,
+}
+
+impl DbPool {
+    pub fn new() -> Self {
+        Self {
+            conn: Mutex::new(None),
+            path: Mutex::new(None),
+        }
+    }
+
+    pub fn set_path(&self, db_path: PathBuf) -> Result<(), String> {
+        let conn = open(&db_path)?;
+        init_schema(&conn)?;
+        *self.path.lock().map_err(|e| e.to_string())? = Some(db_path);
+        *self.conn.lock().map_err(|e| e.to_string())? = Some(conn);
+        Ok(())
+    }
+
+    pub fn clear(&self) {
+        *self.conn.lock().unwrap() = None;
+        *self.path.lock().unwrap() = None;
+    }
+
+      pub fn get(&self) -> Result<std::sync::MutexGuard<'_, Option<Connection>>, String> {
+        let guard = self.conn.lock().map_err(|e| e.to_string())?;
+        if guard.is_none() {
+            return Err("Database not loaded".to_string());
+        }
+        Ok(guard)
+    }
 }
