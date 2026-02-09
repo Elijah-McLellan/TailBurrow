@@ -4,7 +4,7 @@ import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
   Database, Loader2, Volume2, VolumeX, Clock, Pencil, 
-  RefreshCw, Info, Undo,LayoutGrid, Square
+  RefreshCw, Info, Undo, ArrowDownCircle
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
@@ -13,8 +13,31 @@ import Masonry from "react-masonry-css";
 
 // --- TYPE DEFINITIONS ---
 type AppConfig = { library_root?: string | null };
-type ItemDto = { item_id: number; source: string; source_id: string; remote_url?: string | null; file_abs: string; file_rel: string; ext?: string | null; tags: string[]; artists: string[]; sources: string[]; rating?: string | null; fav_count?: number | null; score_total?: number | null; timestamp?: string | null; added_at: string; };
-type LibraryItem = { id?: number; item_id: number; source: string; source_id: string; remote_url?: string | null; url: string; ext?: string | null; tags: string[]; artist: string[]; sources: string[]; rating?: string | null; fav_count?: number | null; score?: { total: number }; timestamp?: string | null; file_rel: string; };
+type ItemDto = {
+  item_id: number;
+  source: string;
+  source_id: string;
+  remote_url?: string | null;
+  file_abs: string;
+  file_rel: string;
+  ext?: string | null;
+  tags: string[];
+  artists: string[];
+  sources: string[];
+  rating?: string | null;
+  fav_count?: number | null;
+  score_total?: number | null;
+  timestamp?: string | null;
+  added_at: string;
+  tags_general: string[];
+  tags_artist: string[];
+  tags_copyright: string[];
+  tags_character: string[];
+  tags_species: string[];
+  tags_meta: string[];
+  tags_lore: string[];
+};
+type LibraryItem = { id?: number; item_id: number; source: string; source_id: string; remote_url?: string | null; url: string; ext?: string | null; tags: string[]; artist: string[]; sources: string[]; rating?: string | null; fav_count?: number | null; score?: { total: number }; timestamp?: string | null; file_rel: string; tags_general: string[]; tags_artist: string[]; tags_copyright: string[]; tags_character: string[]; tags_species: string[]; tags_meta: string[]; tags_lore: string[]; };
 type SyncStatus = { running: boolean; cancelled: boolean; max_new_downloads?: number | null; scanned_pages: number; scanned_posts: number; skipped_existing: number; new_attempted: number; downloaded_ok: number; failed_downloads: number; unavailable: number; last_error?: string | null; };
 type UnavailableDto = { source: string; source_id: string; seen_at: string; reason: string; sources: string[]; };
 type Feed = { id: number; name: string; query: string };
@@ -88,7 +111,6 @@ export default function FavoritesViewer() {
   const hudHoverRef = useRef(false);
   const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const HUD_TIMEOUT_MS = 2000;
-  const feedBreakpoints = { default: 3, 1024: 3, 768: 2, 520: 1 };
 
   // Other
   const [showTagModal, setShowTagModal] = useState(false);
@@ -101,6 +123,10 @@ export default function FavoritesViewer() {
   const [editingRating, setEditingRating] = useState("s");            // NEW
   const [newSourceInput, setNewSourceInput] = useState("");           // NEW
   const [trashCount, setTrashCount] = useState(0);
+  const [blacklist, setBlacklist] = useState(() => localStorage.getItem('blacklist_tags') || "");
+  const [gridColumns, setGridColumns] = useState(() => Number(localStorage.getItem('grid_columns') || 5));
+  const [autoscroll, setAutoscroll] = useState(false);
+  const [autoscrollSpeed, setAutoscrollSpeed] = useState(1); // Pixels per frame
 
   // FurAffinity
   const [faCreds, setFaCreds] = useState<FACreds>({ a: '', b: '' });
@@ -148,6 +174,13 @@ export default function FavoritesViewer() {
         tags: r.tags || [],
         sources: r.sources || [],
         score: { total: r.score_total ?? 0 },
+        tags_general: r.tags_general,
+        tags_artist: r.tags_artist,
+        tags_copyright: r.tags_copyright,
+        tags_character: r.tags_character,
+        tags_species: r.tags_species,
+        tags_meta: r.tags_meta,
+        tags_lore: r.tags_lore,
       }));
 
       setItems(prev => append ? [...prev, ...mapped] : mapped);
@@ -182,14 +215,34 @@ export default function FavoritesViewer() {
 
   const goToNext = useCallback((manual = false) => {
     if (viewerOverlay && manual) pokeHud();
-    setFadeIn(false);
-    setTimeout(() => { setCurrentIndex((prev) => (prev + 1) % filteredItems.length); setFadeIn(true); }, 150);
+
+    // If in Fullscreen (Overlay), use the fade transition
+    if (viewerOverlay) {
+      setFadeIn(false);
+      setTimeout(() => {
+        setCurrentIndex((prev) => (prev + 1) % filteredItems.length);
+        requestAnimationFrame(() => setFadeIn(true));
+      }, 300);
+    } else {
+      // If in Single View, switch instantly
+      setCurrentIndex((prev) => (prev + 1) % filteredItems.length);
+    }
   }, [viewerOverlay, pokeHud, filteredItems.length]);
 
   const goToPrev = useCallback((manual = false) => {
     if (viewerOverlay && manual) pokeHud();
-    setFadeIn(false);
-    setTimeout(() => { setCurrentIndex((prev) => (prev - 1 + filteredItems.length) % filteredItems.length); setFadeIn(true); }, 150);
+
+    // If in Fullscreen (Overlay), use the fade transition
+    if (viewerOverlay) {
+      setFadeIn(false);
+      setTimeout(() => {
+        setCurrentIndex((prev) => (prev - 1 + filteredItems.length) % filteredItems.length);
+        requestAnimationFrame(() => setFadeIn(true));
+      }, 300);
+    } else {
+      // If in Single View, switch instantly
+      setCurrentIndex((prev) => (prev - 1 + filteredItems.length) % filteredItems.length);
+    }
   }, [viewerOverlay, pokeHud, filteredItems.length]);
 
   const refreshSyncStatus = async () => { setSyncStatus(await invoke<SyncStatus>("e621_sync_status")); };
@@ -311,19 +364,79 @@ export default function FavoritesViewer() {
   const saveFeeds = (newFeeds: Feed[]) => { localStorage.setItem("e621_feeds", JSON.stringify(newFeeds)); setFeeds(newFeeds); };
   const removeFeed = (feedId: number) => { saveFeeds(feeds.filter((f) => f.id !== feedId)); setFeedPosts((prev) => { const copy = { ...prev }; delete copy[feedId]; return copy; }); };
   const fetchFeedPosts = async (feedId: number, query: string, { reset = false }: { reset?: boolean } = {}) => {
-    if (!e621CredInfo.username || !e621CredInfo.has_api_key) { if (!credWarned) { alert("Set e621 credentials in Settings first."); setCredWarned(true); } return; }
-    if (loadingFeeds[feedId] || (!reset && (feedPaging[feedId]?.done || /\border:random\b/i.test(query)))) return;
+    // 1. Credentials Check
+    if (!e621CredInfo.username || !e621CredInfo.has_api_key) { 
+      if (!credWarned) { 
+        alert("Set e621 credentials in Settings first."); 
+        setCredWarned(true); 
+      } 
+      return; 
+    }
+
+    // 2. Prevent Duplicate/Invalid Loads
+    if (loadingFeeds[feedId]) return;
+    if (!reset && (feedPaging[feedId]?.done || /\border:random\b/i.test(query))) return;
+
     setLoadingFeeds(prev => ({ ...prev, [feedId]: true }));
+
     try {
       const LIMIT = 50;
       const pageParam = (reset ? null : feedPaging[feedId]?.beforeId) ? `b${feedPaging[feedId]?.beforeId}` : "1";
+      
+      // 3. Fetch from API
       const data = await invoke<any>("e621_fetch_posts", { tags: query, limit: LIMIT, page: pageParam });
-      const newPosts = data.posts || [];
-      setFeedPosts(prev => { const existing = reset ? [] : (prev[feedId] || []); const uniqueMap = new Map(); [...existing, ...newPosts].forEach(p => uniqueMap.set(p.id, p)); return { ...prev, [feedId]: Array.from(uniqueMap.values()) }; });
-      const minId = newPosts.reduce((m: number, p: any) => Math.min(m, p.id), Number.POSITIVE_INFINITY);
-      setFeedPaging(prev => ({ ...prev, [feedId]: { beforeId: (minId !== Number.POSITIVE_INFINITY) ? minId : feedPaging[feedId]?.beforeId, done: newPosts.length < LIMIT } }));
-    } catch (e) { console.error('Error fetching feed:', e); alert("Error fetching feed: " + (e instanceof Error ? e.message : String(e))); } 
-    finally { setLoadingFeeds(prev => ({ ...prev, [feedId]: false })); }
+      const rawPosts = data.posts || [];
+
+      // --- NEW: BLACKLIST FILTERING ---
+      const blTags = blacklist.toLowerCase().split(/[\s\n]+/).filter(t => t); // Split by space or newline
+      
+      const filteredPosts = rawPosts.filter((post: any) => {
+        if (blTags.length === 0) return true; // No blacklist, pass everything
+
+        // Gather all tags from the post structure
+        const pTags = [
+          ...(post.tags.general || []),
+          ...(post.tags.species || []),
+          ...(post.tags.character || []),
+          ...(post.tags.artist || []),
+          ...(post.tags.copyright || []),
+          ...(post.tags.meta || []),
+          ...(post.tags.lore || [])
+        ];
+        
+        // If ANY tag matches the blacklist, filter this post OUT (return false)
+        return !pTags.some(t => blTags.includes(t));
+      });
+      // --------------------------------
+
+      // 4. Update State (using filteredPosts)
+      setFeedPosts(prev => {
+        const existing = reset ? [] : (prev[feedId] || []);
+        const uniqueMap = new Map();
+        
+        // Merge existing + new filtered posts
+        [...existing, ...filteredPosts].forEach(p => uniqueMap.set(p.id, p));
+        
+        return { ...prev, [feedId]: Array.from(uniqueMap.values()) };
+      });
+
+      // 5. Update Paging Cursor (Must use rawPosts min ID to ensure we advance correctly even if all filtered)
+      const minId = rawPosts.reduce((m: number, p: any) => Math.min(m, p.id), Number.POSITIVE_INFINITY);
+      
+      setFeedPaging(prev => ({ 
+        ...prev, 
+        [feedId]: { 
+          beforeId: (minId !== Number.POSITIVE_INFINITY) ? minId : feedPaging[feedId]?.beforeId, 
+          done: rawPosts.length < LIMIT // If API returned fewer than limit, we are done
+        } 
+      }));
+
+    } catch (e) { 
+      console.error('Error fetching feed:', e); 
+      alert("Error fetching feed: " + (e instanceof Error ? e.message : String(e))); 
+    } finally { 
+      setLoadingFeeds(prev => ({ ...prev, [feedId]: false })); 
+    }
   };
   const toggleTag = (tag: string) => setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
   const deleteCurrentItem = async () => { 
@@ -436,7 +549,25 @@ export default function FavoritesViewer() {
       </>
     );
   };
-
+  const TagSection = ({ title, tags, color, onTagClick }: { title: string, tags: string[], color: string, onTagClick: (t: string) => void }) => {
+    if (!tags || tags.length === 0) return null;
+    return (
+      <div className="mb-2">
+        <div className={`text-[10px] uppercase font-bold tracking-wider mb-1 ${color}`}>{title}</div>
+        <div className="flex flex-wrap gap-1.5">
+          {tags.sort().map(tag => (
+            <button
+              key={tag}
+              onClick={() => onTagClick(tag)}
+              className={`px-2 py-0.5 rounded text-xs hover:bg-gray-700 transition-colors ${color.replace('text-', 'text-opacity-80 text-')} border border-gray-700`}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
   const loadTrash = async () => {
     const rows = await invoke<ItemDto[]>("get_trashed_items");
     const mapped = rows.map((r): LibraryItem => ({
@@ -447,7 +578,13 @@ export default function FavoritesViewer() {
       artist: [],
       tags: [],
       sources: [],
-      score: { total: 0 }
+      score: { total: 0 },
+      tags_general: r.tags_general,
+      tags_artist: r.tags_artist,
+      tags_copyright: r.tags_copyright,
+      tags_character: r.tags_character,
+      tags_species: r.tags_species,
+      tags_meta: r.tags_meta,
     }));
     setTrashedItems(mapped);
     setShowTrashModal(true);
@@ -504,6 +641,53 @@ export default function FavoritesViewer() {
       console.error("Failed to save metadata:", error);
       alert("Failed to save: " + String(error));
     }
+  };
+
+  const AutoscrollWidget = () => {
+    if (activeTab === 'viewer' && viewMode === 'single') return null;
+    if (showSettings || showTagModal || showTrashModal) return null;
+    if (!autoscroll) {
+      // Floating FAB to START
+      return (
+        <button
+          onClick={() => setAutoscroll(true)}
+          className="fixed bottom-6 right-6 p-3 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white rounded-full shadow-lg border border-gray-600 transition-all z-40"
+          title="Start Autoscroll"
+        >
+          <ArrowDownCircle className="w-6 h-6" />
+        </button>
+      );
+    }
+
+    // Active Widget with Speed Control
+    return (
+      <div className="fixed bottom-6 right-6 bg-gray-900/90 backdrop-blur border border-gray-600 rounded-xl shadow-xl p-3 flex flex-col items-center gap-2 z-40 animate-in fade-in slide-in-from-bottom-4">
+        {/* Speed Slider */}
+        <div className="h-32 w-8 relative flex justify-center">
+          <input
+            type="range"
+            min="1"
+            max="10"
+            step="0.5"
+            {...{ orient: "vertical" } as any} // Firefox/Chrome support varies for vertical range
+            value={autoscrollSpeed}
+            onChange={(e) => setAutoscrollSpeed(Number(e.target.value))}
+            className="absolute w-32 h-8 -rotate-90 origin-center top-12 accent-green-500 cursor-pointer"
+          />
+        </div>
+        
+        {/* Stop Button */}
+        <button
+          onClick={() => setAutoscroll(false)}
+          className="p-2 bg-red-600 hover:bg-red-700 rounded-full text-white shadow-md"
+          title="Stop"
+        >
+          <Pause className="w-5 h-5" />
+        </button>
+        
+        <span className="text-[10px] font-mono text-gray-400">{autoscrollSpeed}x</span>
+      </div>
+    );
   };
   // --- EFFECTS ---
   // Build allTags whenever items change
@@ -660,13 +844,34 @@ export default function FavoritesViewer() {
   useEffect(() => { setCurrentIndex(0); }, [filteredItems]);
   useEffect(() => { try { localStorage.setItem('preferred_sort_order', sortOrder); } catch {} }, [sortOrder]);
   useEffect(() => { setDownloadedE621Ids(new Set(items.filter(it => it.source === "e621").map(it => Number(it.source_id)))); }, [items]);
+    // Slideshow
   useEffect(() => {
     if (!isSlideshow || filteredItems.length === 0) return;
+    
     const isCurrentVideo = currentItem && ["mp4", "webm"].includes((currentItem.ext || "").toLowerCase());
+    
+    // If waiting for video end, let the video's onEnded handle it
     if (waitForVideoEnd && isCurrentVideo) return;
-    const interval = setInterval(() => { goToNext(); }, slideshowSpeed);
+    
+    const interval = setInterval(() => {
+      // 1. Start Fade Out
+      setFadeIn(false);
+      
+      // 2. Wait for fade out to finish (300ms matches the CSS transition duration)
+      setTimeout(() => {
+        // 3. Switch Image
+        setCurrentIndex((prev) => (prev + 1) % filteredItems.length);
+        
+        // 4. Start Fade In (allow a tiny tick for DOM update)
+        requestAnimationFrame(() => {
+            setFadeIn(true);
+        });
+      }, 300); // Matches duration-300 in CSS
+      
+    }, slideshowSpeed);
+
     return () => clearInterval(interval);
-  }, [isSlideshow, slideshowSpeed, filteredItems.length, currentIndex, waitForVideoEnd, goToNext]);
+  }, [isSlideshow, slideshowSpeed, filteredItems.length, currentIndex, waitForVideoEnd]);
   
   useEffect(() => {
     if (filteredItems.length === 0) return;
@@ -699,6 +904,32 @@ export default function FavoritesViewer() {
     // Remove sortOrder from here if you want to keep the local sort for small lists
     // But since we moved sort to backend, include it here:
   }, [sortOrder, filterSource, selectedTags]); 
+  
+  useEffect(() => {
+    localStorage.setItem('blacklist_tags', blacklist);
+  }, [blacklist]);
+
+  useEffect(() => {
+    if (!autoscroll) return;
+    
+    let frameId: number;
+    const scroll = () => {
+      // Scroll by 'speed' pixels. 
+      // Higher number = faster.
+      window.scrollBy(0, autoscrollSpeed);
+      
+      // Stop if we hit bottom (optional, but good UX)
+      if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight) {
+        // Loop? Stop? Load more? 
+        // For now, let it hit the InfiniteSentinel and load more.
+      }
+      
+      frameId = requestAnimationFrame(scroll);
+    };
+    
+    frameId = requestAnimationFrame(scroll);
+    return () => cancelAnimationFrame(frameId);
+  }, [autoscroll, autoscrollSpeed]); // <-- Add speed to deps
 
 
   // --- RENDER ---
@@ -757,22 +988,7 @@ export default function FavoritesViewer() {
                   <option value="furaffinity">FurAffinity Only</option>
                 </select>
                 <div className="text-gray-400 text-sm">Showing {filteredItems.length} <span className="mx-1">•</span> Loaded {items.length} <span className="mx-1">•</span> Total {totalDatabaseItems}</div>
-                <div className="flex bg-gray-800 rounded p-1 ml-auto border border-gray-700">
-                  <button 
-                    onClick={() => setViewMode('grid')}
-                    className={`p-1.5 rounded transition-colors ${viewMode === 'grid' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
-                    title="Grid View"
-                  >
-                    <LayoutGrid className="w-4 h-4" />
-                  </button>
-                  <button 
-                    onClick={() => setViewMode('single')}
-                    className={`p-1.5 rounded transition-colors ${viewMode === 'single' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}`}
-                    title="Single View"
-                  >
-                    <Square className="w-4 h-4" />
-                  </button>
-                </div>
+                
               </div>
               {selectedTags.length > 0 && (
                 <div className="mt-3 flex gap-2 flex-wrap">
@@ -788,7 +1004,10 @@ export default function FavoritesViewer() {
               {viewMode === 'grid' ? (
               <>
                 <Masonry
-                  breakpointCols={{ default: 5, 1536: 5, 1280: 4, 1024: 3, 768: 2, 500: 1 }}
+                  breakpointCols={{ 
+                    default: gridColumns,
+                    700: 2, 
+                    500: 1 }}
                   className="flex w-auto gap-3"
                   columnClassName="flex flex-col gap-3"
                 >
@@ -856,11 +1075,11 @@ export default function FavoritesViewer() {
                       <div className={viewerOverlay ? "relative w-full h-full" : "relative bg-black"}>
                         {imageLoading && <div className="absolute inset-0 flex items-center justify-center z-10"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div></div>}
                         {viewerOverlay && (<><div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={() => goToPrev(true)} /><div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} /></>)}
-                        <div className={viewerOverlay ? "w-full h-full flex items-center justify-center bg-black" : "bg-black"}>
+                        <div className={viewerOverlay ? "w-full h-full flex items-center justify-center bg-black" : "w-full h-[75vh] flex items-center justify-center bg-black rounded-lg overflow-hidden relative"}>
                           {isVideo ? (
                             <video key={currentItem.url} src={currentItem.url} controls autoPlay loop={!waitForVideoEnd || !isSlideshow} muted={autoMuteVideos} className={`w-full h-auto object-contain transition-opacity duration-300 ${viewerOverlay ? 'max-h-full' : 'max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`} style={viewerOverlay ? { pointerEvents: 'none' } : undefined} onLoadedData={(e) => { const video = e.currentTarget; if (!autoMuteVideos) video.volume = 1.0; setImageLoading(false); }} onLoadStart={() => setImageLoading(true)} onError={() => { setImageLoading(false); console.error("Video load error"); }} onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }} />
                           ) : (
-                            <img src={currentItem.url} alt="Favorite" className={`w-full h-auto object-contain transition-opacity duration-300 ${viewerOverlay ? 'max-h-full' : 'max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`} onLoad={() => setImageLoading(false)} onLoadStart={() => setImageLoading(true)} onError={(e) => { setImageLoading(false); const img = e.currentTarget; img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E"; }} />
+                            <img key={currentItem.url} src={currentItem.url} alt="Favorite" className={`w-full h-auto object-contain transition-opacity duration-200 ${viewerOverlay ? 'max-h-full' : 'max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`} onLoad={() => setImageLoading(false)} onLoadStart={() => setImageLoading(true)} onError={(e) => { setImageLoading(false); const img = e.currentTarget; img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E"; }} />
                           )}
                         </div>
                         <div className={viewerOverlay ? ["absolute bottom-6 left-1/2 -translate-x-1/2", "transition-all duration-300 ease-out", showHud ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"].join(" ") : "p-4 bg-gray-800 border-t border-gray-700"} onMouseEnter={() => { if (viewerOverlay) { hudHoverRef.current = true; setShowHud(true); } }} onMouseLeave={() => { if (viewerOverlay) { hudHoverRef.current = false; scheduleHudHide(); } }}>
@@ -978,11 +1197,41 @@ export default function FavoritesViewer() {
                   )}
                 </div>
                 <div className="lg:col-span-1">
-                  <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-3 flex items-center gap-2"><Tag className="w-4 h-4" />Popular Tags</h3>
-                    <div className="max-h-[70vh] overflow-y-auto space-y-1">
-                      {allTags.slice(0, 50).map(tag => (<button key={tag} onClick={() => toggleTag(tag)} className={`w-full text-left px-2 py-1 rounded text-sm hover:bg-gray-700 ${selectedTags.includes(tag) ? 'bg-purple-600' : ''}`}>{tag} <span className="text-gray-500">({items.filter(item => item.tags?.includes(tag)).length})</span></button>))}
-                    </div>
+                  <div className="bg-gray-800 rounded-lg p-4 h-full max-h-[80vh] overflow-y-auto">
+                    {/* If in Single View, show tags for THIS item */}
+                    {viewMode === 'single' && currentItem ? (
+                      <>
+                        <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                          <Tag className="w-4 h-4" /> Tags
+                        </h3>
+                        
+                        <TagSection title="Artists" tags={currentItem.tags_artist} color="text-yellow-400" onTagClick={toggleTag} />
+                        <TagSection title="Copyrights" tags={currentItem.tags_copyright} color="text-pink-400" onTagClick={toggleTag} />
+                        <TagSection title="Characters" tags={currentItem.tags_character} color="text-green-400" onTagClick={toggleTag} />
+                        <TagSection title="Species" tags={currentItem.tags_species} color="text-red-400" onTagClick={toggleTag} />
+                        <TagSection title="General" tags={currentItem.tags_general} color="text-blue-300" onTagClick={toggleTag} />
+                        <TagSection title="Meta" tags={currentItem.tags_meta} color="text-gray-400" onTagClick={toggleTag} />
+                        <TagSection title="Lore" tags={currentItem.tags_lore} color="text-purple-300" onTagClick={toggleTag} />
+                      </>
+                    ) : (
+                      /* If in Grid View, show Popular Tags (Global) */
+                      <>
+                        <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                          <Tag className="w-4 h-4" /> Popular Tags
+                        </h3>
+                        <div className="space-y-1">
+                          {allTags.slice(0, 50).map(tag => (
+                            <button 
+                              key={tag} 
+                              onClick={() => toggleTag(tag)} 
+                              className={`w-full text-left px-2 py-1 rounded text-sm hover:bg-gray-700 ${selectedTags.includes(tag) ? 'bg-purple-600' : ''}`}
+                            >
+                              {tag}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1056,7 +1305,11 @@ export default function FavoritesViewer() {
                     </div>
                     {feedPosts[feed.id] && feedPosts[feed.id].length > 0 ? (
                       <>
-                        <Masonry breakpointCols={feedBreakpoints} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                        <Masonry breakpointCols={{ 
+                          default: gridColumns, 
+                          700: 2, 
+                          500: 1 
+                        }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                           {feedPosts[feed.id].map((post: any) => {
                             const busy = !!feedActionBusy[post.id]; const isRemoteFav = !!post.is_favorited; const imageUrl = post.sample?.url || post.file?.url || post.preview?.url; const sourceUrl = `https://e621.net/posts/${post.id}`; const artists = post.tags?.artist || []; const w = post.sample?.width || post.file?.width || 1; const h = post.sample?.height || post.file?.height || 1;
                             return (
@@ -1135,9 +1388,9 @@ export default function FavoritesViewer() {
               <div className="border-t border-gray-700 pt-4">
                 <h3 className="text-lg font-semibold mb-2">Viewer</h3>
                 
-                <div className="flex gap-4">
-                  {/* Sort Order */}
-                  <div className="flex-1">
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Top Left: Sort Order */}
+                  <div>
                     <label className="text-sm text-gray-400 mb-1 block">Default sort order</label>
                     <select 
                       value={sortOrder} 
@@ -1152,8 +1405,8 @@ export default function FavoritesViewer() {
                     </select>
                   </div>
 
-                  {/* Batch Size */}
-                  <div className="flex-1">
+                  {/* Top Right: Items per Batch */}
+                  <div>
                     <label className="text-sm text-gray-400 mb-1 block">Items per batch</label>
                     <select 
                       value={itemsPerPage} 
@@ -1166,6 +1419,39 @@ export default function FavoritesViewer() {
                       <option value={500}>500</option>
                       <option value={1000}>1000</option>
                     </select>
+                  </div>
+
+                  {/* Bottom Left: Grid Columns Slider */}
+                  <div>
+                    <label className="text-sm text-gray-400 mb-1 block flex justify-between">
+                      <span>Grid Columns</span>
+                      <span className="font-mono text-purple-400">{gridColumns}</span>
+                    </label>
+                    <div className="flex items-center h-[42px]"> {/* Height matches inputs */}
+                      <input 
+                        type="range" 
+                        min="1" max="8" 
+                        value={gridColumns} 
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setGridColumns(val);
+                          localStorage.setItem('grid_columns', String(val));
+                        }}
+                        className="w-full accent-purple-600 cursor-pointer" 
+                      />
+                    </div>
+                  </div>
+
+                  {/* Bottom Right: Blacklist */}
+                  <div className="row-span-2"> {/* Optional: Make blacklist taller if needed, or keep it 1x1 */}
+                    <label className="text-sm text-gray-400 mb-1 block">Blacklist (Feeds Only)</label>
+                    <textarea 
+                      value={blacklist}
+                      onChange={(e) => setBlacklist(e.target.value)}
+                      placeholder="Tags to hide..."
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded h-[42px] min-h-[42px] focus:outline-none focus:border-purple-500 text-sm resize-y"
+                      style={{ height: '42px' }} // Matches single-line inputs initially
+                    />
                   </div>
                 </div>
               </div>
@@ -1577,6 +1863,7 @@ export default function FavoritesViewer() {
           </div>
         </div>
       )}
+        <AutoscrollWidget />
     </div>
   );
 }

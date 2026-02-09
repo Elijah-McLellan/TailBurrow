@@ -79,14 +79,19 @@ pub struct ItemDto {
   pub file_rel: String,
   pub file_abs: String,
   pub ext: Option<String>,
-  pub tags: Vec<String>,
-  pub artists: Vec<String>,
   pub sources: Vec<String>,
   pub rating: Option<String>,
   pub fav_count: Option<i64>,
   pub score_total: Option<i64>,
   pub timestamp: Option<String>,
   pub added_at: String,
+  pub tags_general: Vec<String>,
+  pub tags_artist: Vec<String>,
+  pub tags_copyright: Vec<String>,
+  pub tags_character: Vec<String>,
+  pub tags_species: Vec<String>,
+  pub tags_meta: Vec<String>,
+  pub tags_lore: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -832,8 +837,13 @@ pub fn get_trashed_items(app: tauri::AppHandle) -> Result<Vec<ItemDto>, String> 
             score_total: r.get(8)?,
             timestamp: r.get(9)?,
             added_at: r.get(10)?,
-            tags: vec![],
-            artists: vec![],
+            tags_general: vec![],
+            tags_artist: vec![],
+            tags_copyright: vec![],
+            tags_character: vec![],
+            tags_species: vec![],
+            tags_meta: vec![],
+            tags_lore: vec![],
             sources: vec![],
         })
     }).map_err(|e| e.to_string())?;
@@ -1080,8 +1090,11 @@ pub fn list_items(
         SELECT
           i.item_id, i.source, i.source_id, i.remote_url, i.file_rel, i.ext,
           i.rating, i.fav_count, i.score_total, i.created_at, i.added_at,
-          (SELECT GROUP_CONCAT(t.name, char(9)) FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id),
-          (SELECT GROUP_CONCAT(t.name, char(9)) FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id AND t.type = 'artist'),
+          -- Fetch ALL tags with their types concatenated by '$$'
+          (SELECT GROUP_CONCAT(t.name || '$$' || t.type, char(9)) 
+           FROM item_tags it 
+           JOIN tags t ON it.tag_id = t.tag_id 
+           WHERE it.item_id = i.item_id),
           (SELECT GROUP_CONCAT(s.url, char(9)) FROM item_sources isrc JOIN sources s ON isrc.source_row_id = s.source_row_id WHERE isrc.item_id = i.item_id)
         FROM items i
         WHERE i.trashed_at IS NULL
@@ -1197,6 +1210,7 @@ pub fn list_items(
                 ));
             }
         }
+        
     }
 
     // --- APPLY WHERE ---
@@ -1219,11 +1233,38 @@ pub fn list_items(
     // Prepare & Execute
     let db_params: Vec<&dyn rusqlite::ToSql> = params_store.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    
+
     let rows = stmt.query_map(&*db_params, |r| {
         let file_rel: String = r.get(4)?;
         let file_abs = root.join(&file_rel);
         
+        // Parse the raw tag string "name$$type\tname2$$type2"
+        let raw_tags: Option<String> = r.get(11)?;
+        let mut t_gen = vec![];
+        let mut t_art = vec![];
+        let mut t_cop = vec![];
+        let mut t_cha = vec![];
+        let mut t_spe = vec![];
+        let mut t_met = vec![];
+        let mut t_lor = vec![];
+
+        if let Some(s) = raw_tags {
+            for entry in s.split('\t') {
+                if let Some((name, type_)) = entry.split_once("$$") {
+                    let n = name.to_string();
+                    match type_ {
+                        "artist" => t_art.push(n),
+                        "copyright" => t_cop.push(n),
+                        "character" => t_cha.push(n),
+                        "species" => t_spe.push(n),
+                        "meta" => t_met.push(n),
+                        "lore" => t_lor.push(n),
+                        _ => t_gen.push(n),
+                    }
+                }
+            }
+        }
+
         let split_tab = |s: String| -> Vec<String> {
             if s.is_empty() { vec![] } else { s.split('\t').map(|x| x.to_string()).collect() }
         };
@@ -1241,8 +1282,13 @@ pub fn list_items(
             score_total: r.get(8)?,
             timestamp: r.get(9)?,
             added_at: r.get(10)?,
-            tags: split_tab(r.get(11).unwrap_or_default()),
-            artists: split_tab(r.get(12).unwrap_or_default()),
+            tags_general: t_gen,
+            tags_artist: t_art,
+            tags_copyright: t_cop,
+            tags_character: t_cha,
+            tags_species: t_spe,
+            tags_meta: t_met,
+            tags_lore: t_lor,
             sources: split_tab(r.get(13).unwrap_or_default()),
         })
     }).map_err(|e| e.to_string())?;
