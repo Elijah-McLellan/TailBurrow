@@ -552,6 +552,7 @@ export default function FavoritesViewer() {
 
   // Paging
   const [initialLoading, setInitialLoading] = useState(true);
+  const [isSearching, setIsSearching] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMoreItems, setHasMoreItems] = useState(true);
   const [totalDatabaseItems, setTotalDatabaseItems] = useState(0);
@@ -673,6 +674,10 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
     const requestId = ++loadRequestIdRef.current;
     const limit = overrides?.pageSize ?? itemsPerPage;
 
+    if (!append) {
+      setIsSearching(true);
+    }
+
     try {
       const offset = append ? itemsRef.current.length : 0;
       const combinedSearch = [searchTags, ...selectedTags].join(" ").trim();
@@ -711,6 +716,10 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
       if (requestId !== loadRequestIdRef.current) return;
       console.error("Failed to load library:", error);
       toast("Failed to load library. Please check your library settings.", "error");
+    } finally {
+      if (requestId === loadRequestIdRef.current) {
+        setIsSearching(false);
+      }
     }
   }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder]);
 
@@ -1088,6 +1097,51 @@ if (loadingFeedsRef.current[feedId]) return;
     await invoke("fa_cancel_sync");
   }, []);
 
+const Skeleton = ({ className = "", style }: { className?: string; style?: React.CSSProperties }) => (
+  <div className={`animate-pulse bg-gray-700 rounded ${className}`} style={style} />
+);
+
+// Varying aspect ratios to mimic Masonry layout
+const skeletonAspects = [
+  "aspect-[3/4]",
+  "aspect-square",
+  "aspect-[4/5]",
+  "aspect-[2/3]",
+  "aspect-[5/6]",
+  "aspect-[3/4]",
+  "aspect-[4/3]",
+  "aspect-square",
+  "aspect-[3/5]",
+  "aspect-[4/5]",
+  "aspect-[3/4]",
+  "aspect-square",
+  "aspect-[2/3]",
+  "aspect-[5/4]",
+  "aspect-[3/4]",
+];
+
+const SkeletonGridItem = ({ index = 0 }: { index?: number }) => (
+  <div className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
+    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
+  </div>
+);
+
+const SkeletonFeedPost = ({ index = 0 }: { index?: number }) => (
+  <div className="bg-gray-700 rounded overflow-hidden">
+    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
+  </div>
+);
+
+const skeletonWidths = [75, 60, 85, 70, 90, 65, 80, 72, 88, 68, 77, 83, 62, 95, 71];
+
+const SkeletonTagList = ({ count = 10 }: { count?: number }) => (
+  <div className="space-y-1">
+    {Array.from({ length: count }).map((_, i) => (
+      <Skeleton key={i} className="h-7" style={{ width: `${skeletonWidths[i % skeletonWidths.length]}%` }} />
+    ))}
+  </div>
+);
+
   // --- EFFECTS ---
 
   // Init
@@ -1374,10 +1428,17 @@ if (loadingFeedsRef.current[feedId]) return;
             </div>
           </div>
 
-          {initialLoading ? (
-            <div className="max-w-7xl mx-auto p-12 flex items-center justify-center">
-              <Loader2 className="w-10 h-10 animate-spin text-purple-500" />
-              <span className="ml-3 text-gray-400">Loading library...</span>
+          {(initialLoading || isSearching) ? (
+            <div className="max-w-7xl mx-auto p-4">
+              <Masonry
+                breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
+                className="flex w-auto gap-3"
+                columnClassName="flex flex-col gap-3"
+              >
+                {Array.from({ length: gridColumns * 3 }).map((_, i) => (
+                  <SkeletonGridItem key={`init-skeleton-${i}`} index={i} />
+                ))}
+              </Masonry>
             </div>
           ) : itemCount > 0 ? (
             <div className="max-w-7xl mx-auto p-4">
@@ -1395,6 +1456,9 @@ if (loadingFeedsRef.current[feedId]) return;
                         index={index}
                         onSelect={handleGridItemSelect}
                       />
+                    ))}
+                    {isLoadingMore && Array.from({ length: gridColumns * 2 }).map((_, i) => (
+                      <SkeletonGridItem key={`skeleton-${i}`} index={i} />
                     ))}
                   </Masonry>
                   {hasMoreItems && (
@@ -1576,13 +1640,17 @@ if (loadingFeedsRef.current[feedId]) return;
                       ) : (
                         <>
                           <h3 className="text-lg font-semibold mb-3 flex items-center gap-2"><Tag className="w-4 h-4" /> Popular Tags</h3>
-                          <div className="space-y-1">
-                            {allTags.slice(0, 50).map(tag => (
+                          {(initialLoading || isSearching) ? (
+                            <SkeletonTagList count={15} />
+                          ) : (
+                            <div className="space-y-1">
+                              {allTags.slice(0, 50).map(tag => (
                               <button key={tag} onClick={() => toggleTag(tag)} className={`w-full text-left px-2 py-1 rounded text-sm hover:bg-gray-700 ${selectedTags.includes(tag) ? 'bg-purple-600' : ''}`}>
                                 {tag}
                               </button>
                             ))}
                           </div>
+                           )}
                         </>
                       )}
                     </div>
@@ -1691,6 +1759,16 @@ if (loadingFeedsRef.current[feedId]) return;
                         />
                         {feedPaging[feed.id]?.done && <div className="text-center text-gray-500 text-sm py-4">End of results</div>}
                       </>
+                    ) : loadingFeeds[feed.id] ? (
+                      <Masonry
+                        breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
+                        className="flex w-auto gap-3"
+                        columnClassName="flex flex-col gap-3"
+                      >
+                        {Array.from({ length: gridColumns * 2 }).map((_, i) => (
+                          <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} />
+                        ))}
+                      </Masonry>
                     ) : (
                       <div className="text-center py-20 text-gray-400 italic">"Nobody here but us dergs"</div>
                     )}
