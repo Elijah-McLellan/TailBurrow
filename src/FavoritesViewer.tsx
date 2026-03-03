@@ -331,6 +331,38 @@ const GridItem = React.memo(({ item, index, onSelect }: {
   onSelect: (index: number) => void;
 }) => {
   const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) {
+        clearTimeout(hoverTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleMouseEnter = useCallback(() => {
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+
+    hoverTimeoutRef.current = setTimeout(() => {
+      const video = videoRef.current;
+      if (video && video.paused) {
+        video.play().catch(() => {});
+      }
+    }, 120);
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    const video = videoRef.current;
+    if (video && !video.paused) {
+      video.pause();
+    }
+  }, []);
 
   return (
     <div
@@ -340,12 +372,14 @@ const GridItem = React.memo(({ item, index, onSelect }: {
       {isVid ? (
         <div className="relative">
           <video
+            ref={videoRef}
             src={item.url}
             className="w-full h-auto object-cover"
             muted
             loop
-            onMouseOver={e => { e.currentTarget.play().catch(() => {}); }}
-            onMouseOut={e => { e.currentTarget.pause(); }}
+            preload="metadata"
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
           />
           <div className="absolute top-2 right-2 bg-black/50 p-1 rounded-full">
             <Play className="w-3 h-3 text-white" />
@@ -600,17 +634,39 @@ export default function FavoritesViewer() {
     [items]
   );
 
+const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tags: [] });
+
   const allTags = useMemo(() => {
+    // Only needed in grid mode
+    if (viewMode !== 'grid') return allTagsCache.current.tags;
+
+    // Skip recomputation if item count hasn't changed significantly (within 10%)
+    const cachedLen = allTagsCache.current.length;
+    const currentLen = items.length;
+    if (cachedLen > 0 && Math.abs(currentLen - cachedLen) / cachedLen < 0.1) {
+      return allTagsCache.current.tags;
+    }
+
+    // Sample up to 500 items for performance (still representative for popular tags)
+    const sampleSize = Math.min(items.length, 500);
+    const step = items.length <= sampleSize ? 1 : Math.floor(items.length / sampleSize);
+
     const tagCounts = new Map<string, number>();
-    items.forEach(item => {
+    for (let i = 0; i < items.length && tagCounts.size < 5000; i += step) {
+      const item = items[i];
       item.tags?.forEach(tag => {
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
       });
-    });
-    return Array.from(tagCounts.entries())
+    }
+
+    const result = Array.from(tagCounts.entries())
       .sort(([, a], [, b]) => b - a)
+      .slice(0, 100) // Only need top 100, UI shows 50
       .map(([tag]) => tag);
-  }, [items]);
+
+    allTagsCache.current = { length: currentLen, tags: result };
+    return result;
+  }, [items, viewMode]);
 
   // --- CORE DATA ---
   const loadData = useCallback(async (append: boolean, overrides?: { pageSize?: number }) => {
@@ -1187,7 +1243,7 @@ if (loadingFeedsRef.current[feedId]) return;
       (currentIndex - 1 + itemCount) % itemCount,
     ];
 
-    const abortControllers: Array<() => void> = [];
+    const images: HTMLImageElement[] = [];
 
     preloadIndexes.forEach(idx => {
       const item = items[idx];
@@ -1195,10 +1251,17 @@ if (loadingFeedsRef.current[feedId]) return;
       const img = new Image();
       img.src = item.url;
       img.onload = () => { imageCacheRef.current[item.url] = true; };
-      abortControllers.push(() => { img.src = ""; img.onload = null; });
+      images.push(img);
     });
 
-    return () => { abortControllers.forEach(fn => fn()); };
+    return () => {
+      images.forEach(img => {
+        img.onload = null;
+        img.onerror = null;
+        // Use data URI instead of empty string to avoid phantom request to current page
+        img.src = "data:,";
+      });
+    };
   }, [currentIndex, itemCount, items]);
 
   // Auto-load more when near end in single view
