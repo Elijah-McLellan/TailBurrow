@@ -209,12 +209,12 @@ function getSocialMediaName(url: string): string {
   }
 }
 
-function parsePositiveInt(s: string): number | null {
+function parsePositiveInt(s: string): { ok: true; value: number | null } | { ok: false } {
   const trimmed = s.trim();
-  if (trimmed === "") return null;
+  if (trimmed === "") return { ok: true, value: null };
   const n = Number(trimmed);
-  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return undefined as any; // signals invalid
-  return n;
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return { ok: false };
+  return { ok: true, value: n };
 }
 
 // ─── EXTRACTED COMPONENTS (stable, outside main component) ───
@@ -687,26 +687,38 @@ export default function FavoritesViewer() {
     if (viewerOverlay) {
       setFadeIn(false);
       setTimeout(() => {
-        setCurrentIndex(prev => (prev + 1) % itemCount);
+        setCurrentIndex(prev => {
+          const len = itemsRef.current.length;
+          return len === 0 ? 0 : (prev + 1) % len;
+        });
         requestAnimationFrame(() => setFadeIn(true));
       }, FADE_DURATION_MS);
     } else {
-      setCurrentIndex(prev => (prev + 1) % itemCount);
+      setCurrentIndex(prev => {
+        const len = itemsRef.current.length;
+        return len === 0 ? 0 : (prev + 1) % len;
+      });
     }
-  }, [viewerOverlay, pokeHud, itemCount]);
+  }, [viewerOverlay, pokeHud]);
 
   const goToPrev = useCallback((manual = false) => {
     if (viewerOverlay && manual) pokeHud();
     if (viewerOverlay) {
       setFadeIn(false);
       setTimeout(() => {
-        setCurrentIndex(prev => (prev - 1 + itemCount) % itemCount);
+        setCurrentIndex(prev => {
+          const len = itemsRef.current.length;
+          return len === 0 ? 0 : (prev - 1 + len) % len;
+        });
         requestAnimationFrame(() => setFadeIn(true));
       }, FADE_DURATION_MS);
     } else {
-      setCurrentIndex(prev => (prev - 1 + itemCount) % itemCount);
+      setCurrentIndex(prev => {
+        const len = itemsRef.current.length;
+        return len === 0 ? 0 : (prev - 1 + len) % len;
+      });
     }
-  }, [viewerOverlay, pokeHud, itemCount]);
+  }, [viewerOverlay, pokeHud]);
 
   // --- SYNC ---
   const refreshSyncStatus = useCallback(async () => {
@@ -714,9 +726,9 @@ export default function FavoritesViewer() {
   }, []);
 
   const startSync = useCallback(async () => {
-    const n = parsePositiveInt(syncMaxNew);
-    if (n === undefined) { toast("Stop-after-N must be a positive number or blank.", "error"); return; }
-    await invoke("e621_sync_start", { maxNewDownloads: n });
+    const parsed = parsePositiveInt(syncMaxNew);
+    if (!parsed.ok) { toast("Stop-after-N must be a positive number or blank.", "error"); return; }
+    await invoke("e621_sync_start", { maxNewDownloads: parsed.value });
     syncWasRunningRef.current = true;
     await refreshSyncStatus();
   }, [syncMaxNew, refreshSyncStatus]);
@@ -993,10 +1005,10 @@ if (loadingFeedsRef.current[feedId]) return;
       setFaCredsSet(true);
     }
 
-    const n = parsePositiveInt(faLimit);
-    if (n === undefined) { toast("Limit must be a positive number or blank.", "error"); return; }
+    const parsed = parsePositiveInt(faLimit);
+    if (!parsed.ok) { toast("Limit must be a positive number or blank.", "error"); return; }
 
-    await invoke("fa_start_sync", { limit: n });
+    await invoke("fa_start_sync", { limit: parsed.value });
 
     // Clear any previous interval before starting a new one
     if (faSyncIntervalRef.current) {
