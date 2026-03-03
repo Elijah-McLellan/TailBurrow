@@ -528,6 +528,7 @@ export default function FavoritesViewer() {
   const hasMoreRef = useRef(true);
   const faSyncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const loadingFeedsRef = useRef<Record<number, boolean>>({});
+  const feedPagingRef = useRef<Record<number, FeedPagingState>>({});
 
   // e621
   const [feedActionBusy, setFeedActionBusy] = useState<Record<number, boolean>>({});
@@ -589,6 +590,10 @@ export default function FavoritesViewer() {
   useEffect(() => {
     loadingFeedsRef.current = loadingFeeds;
   }, [loadingFeeds]);
+
+  useEffect(() => {
+    feedPagingRef.current = feedPaging;
+  }, [feedPaging]);
 
   const downloadedE621Ids = useMemo(
     () => new Set(items.filter(it => it.source === "e621").map(it => Number(it.source_id))),
@@ -771,24 +776,15 @@ export default function FavoritesViewer() {
       return;
     }
 
-    if (loadingFeedsRef.current[feedId]) return;
+if (loadingFeedsRef.current[feedId]) return;
 
-    setFeedPaging(prev => {
-      const current = prev[feedId];
-      if (!reset && (current?.done || /\border:random\b/i.test(query))) return prev;
-      return prev;
-    });
-
-    if (!reset) {
-      const currentPaging = feedPaging[feedId];
-      if (currentPaging?.done || /\border:random\b/i.test(query)) return;
-    }
+    const currentPaging = feedPagingRef.current[feedId];
+    if (!reset && (currentPaging?.done || /\border:random\b/i.test(query))) return;
 
     loadingFeedsRef.current = { ...loadingFeedsRef.current, [feedId]: true };
     setLoadingFeeds(prev => ({ ...prev, [feedId]: true }));
 
     try {
-      const currentPaging = feedPaging[feedId];
       const pageParam = (!reset && currentPaging?.beforeId) ? `b${currentPaging.beforeId}` : "1";
       const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: query, limit: FEED_PAGE_LIMIT, page: pageParam });
       const rawPosts = data.posts || [];
@@ -827,7 +823,7 @@ export default function FavoritesViewer() {
       loadingFeedsRef.current = { ...loadingFeedsRef.current, [feedId]: false };
       setLoadingFeeds(prev => ({ ...prev, [feedId]: false }));
     }
-  }, [e621CredInfo, credWarned, feedPaging, blacklist]);
+  }, [e621CredInfo, credWarned, blacklist]);
 
   const ensureFavorite = useCallback(async (feedId: number, post: E621Post) => {
     const id = post.id;
