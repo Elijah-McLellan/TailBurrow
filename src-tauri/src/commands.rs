@@ -276,7 +276,7 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
     let client = reqwest::Client::new();
     let resp = client
         .get(&post.file_url)
-        .header("User-Agent", "TailBurrow/0.2.2 (local archiver)")
+        .header("User-Agent", "TailBurrow/0.2.3 (local archiver)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -410,7 +410,7 @@ pub async fn e621_test_connection() -> Result<Status, String> {
   let resp = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.2.2 (test)")
+    .header("User-Agent", "TailBurrow/0.2.3 (test)")
     .query(&[("limit", "1"), ("tags", "order:id_desc")])
     .send()
     .await
@@ -431,7 +431,7 @@ pub async fn e621_fetch_posts(tags: String, limit: u32, page: Option<String>) ->
   let mut req = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.2.2 (feeds)")
+    .header("User-Agent", "TailBurrow/0.2.3 (feeds)")
     .query(&[("tags", tags), ("limit", limit.to_string())]);
 
   if let Some(p) = page {
@@ -521,7 +521,7 @@ pub fn e621_sync_start(
         let resp = client
           .get("https://e621.net/posts.json")
           .basic_auth(&username, Some(&api_key))
-          .header("User-Agent", "TailBurrow/0.2.2 (sync)")
+          .header("User-Agent", "TailBurrow/0.2.3 (sync)")
           .query(&[
             ("tags", tags.as_str()),
             ("limit", "320"),
@@ -702,7 +702,7 @@ pub async fn e621_favorite(post_id: i64) -> Result<Status, String> {
   let resp = client
     .post("https://e621.net/favorites.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.2.2 (favorite)")
+    .header("User-Agent", "TailBurrow/0.2.3 (favorite)")
     .header("Content-Type", "application/x-www-form-urlencoded")
     .body(format!("post_id={}", post_id))
     .send()

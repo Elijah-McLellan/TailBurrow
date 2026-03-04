@@ -522,6 +522,51 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
   );
 };
 
+// ─── SKELETON COMPONENTS ─────────────────────────────────────
+const Skeleton = ({ className = "", style }: { className?: string; style?: React.CSSProperties }) => (
+  <div className={`animate-pulse bg-gray-700 rounded ${className}`} style={style} />
+);
+
+const skeletonAspects = [
+  "aspect-[3/4]",
+  "aspect-square",
+  "aspect-[4/5]",
+  "aspect-[2/3]",
+  "aspect-[5/6]",
+  "aspect-[3/4]",
+  "aspect-[4/3]",
+  "aspect-square",
+  "aspect-[3/5]",
+  "aspect-[4/5]",
+  "aspect-[3/4]",
+  "aspect-square",
+  "aspect-[2/3]",
+  "aspect-[5/4]",
+  "aspect-[3/4]",
+];
+
+const SkeletonGridItem = ({ index = 0 }: { index?: number }) => (
+  <div className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
+    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
+  </div>
+);
+
+const SkeletonFeedPost = ({ index = 0 }: { index?: number }) => (
+  <div className="bg-gray-700 rounded overflow-hidden">
+    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
+  </div>
+);
+
+const skeletonWidths = [75, 60, 85, 70, 90, 65, 80, 72, 88, 68, 77, 83, 62, 95, 71];
+
+const SkeletonTagList = ({ count = 10 }: { count?: number }) => (
+  <div className="space-y-1">
+    {Array.from({ length: count }).map((_, i) => (
+      <Skeleton key={i} className="h-7" style={{ width: `${skeletonWidths[i % skeletonWidths.length]}%` }} />
+    ))}
+  </div>
+);
+
 // ─── MAIN COMPONENT ──────────────────────────────────────────
 export default function FavoritesViewer() {
 
@@ -744,7 +789,7 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
         setIsSearching(false);
       }
     }
-  }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder]);
+  }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder, toast]);
 
   const loadMoreItems = useCallback(async () => {
     if (loadingRef.current || !hasMoreRef.current) return;
@@ -819,7 +864,7 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
     await invoke("e621_sync_start", { maxNewDownloads: parsed.value });
     syncWasRunningRef.current = true;
     await refreshSyncStatus();
-  }, [syncMaxNew, refreshSyncStatus]);
+  }, [syncMaxNew, refreshSyncStatus, toast]);
 
   const cancelSync = useCallback(async () => {
     await invoke("e621_sync_cancel");
@@ -841,8 +886,9 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
     await invoke("e621_set_credentials", { username: apiUsername, apiKey });
     setApiKey("");
     await refreshE621CredInfo();
+    setCredWarned(false);
     toast("Saved e621 credentials.", "success");
-  }, [apiUsername, apiKey, refreshE621CredInfo]);
+  }, [apiUsername, apiKey, refreshE621CredInfo, toast]);
 
   // --- FEEDS ---
   const loadFeeds = useCallback(() => {
@@ -972,18 +1018,18 @@ if (loadingFeedsRef.current[feedId]) return;
     await loadData(false);
   }, [refreshLibraryRoot, loadData]);
 
-  const toggleFullscreen = useCallback(async () => {
-    if (viewerOverlay) pokeHud();
-    try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch (e) {
-      console.warn("Fullscreen request failed:", e);
-    }
-  }, [viewerOverlay, pokeHud]);
+  // const toggleFullscreen = useCallback(async () => {
+  //   if (viewerOverlay) pokeHud();
+  //   try {
+  //     if (!document.fullscreenElement) {
+  //       await document.documentElement.requestFullscreen();
+  //     } else {
+  //       await document.exitFullscreen();
+  //     }
+  //   } catch (e) {
+  //     console.warn("Fullscreen request failed:", e);
+  //   }
+  // }, [viewerOverlay, pokeHud]);
 
   const openExternalUrl = useCallback(async (url: string) => {
     try { await openUrl(url); } catch (e) { console.error("Failed to open URL:", e); toast("Failed to open link.", "error"); }
@@ -1114,56 +1160,11 @@ if (loadingFeedsRef.current[feedId]) return;
         loadData(false);
       }
     }, 1000);
-  }, [faCredsSet, faCreds, faLimit, loadData]);
+  }, [faCredsSet, faCreds, faLimit, loadData, toast]);
 
   const cancelFaSync = useCallback(async () => {
     await invoke("fa_cancel_sync");
   }, []);
-
-const Skeleton = ({ className = "", style }: { className?: string; style?: React.CSSProperties }) => (
-  <div className={`animate-pulse bg-gray-700 rounded ${className}`} style={style} />
-);
-
-// Varying aspect ratios to mimic Masonry layout
-const skeletonAspects = [
-  "aspect-[3/4]",
-  "aspect-square",
-  "aspect-[4/5]",
-  "aspect-[2/3]",
-  "aspect-[5/6]",
-  "aspect-[3/4]",
-  "aspect-[4/3]",
-  "aspect-square",
-  "aspect-[3/5]",
-  "aspect-[4/5]",
-  "aspect-[3/4]",
-  "aspect-square",
-  "aspect-[2/3]",
-  "aspect-[5/4]",
-  "aspect-[3/4]",
-];
-
-const SkeletonGridItem = ({ index = 0 }: { index?: number }) => (
-  <div className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
-    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
-  </div>
-);
-
-const SkeletonFeedPost = ({ index = 0 }: { index?: number }) => (
-  <div className="bg-gray-700 rounded overflow-hidden">
-    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
-  </div>
-);
-
-const skeletonWidths = [75, 60, 85, 70, 90, 65, 80, 72, 88, 68, 77, 83, 62, 95, 71];
-
-const SkeletonTagList = ({ count = 10 }: { count?: number }) => (
-  <div className="space-y-1">
-    {Array.from({ length: count }).map((_, i) => (
-      <Skeleton key={i} className="h-7" style={{ width: `${skeletonWidths[i % skeletonWidths.length]}%` }} />
-    ))}
-  </div>
-);
 
   // --- EFFECTS ---
 
@@ -1267,7 +1268,7 @@ const SkeletonTagList = ({ count = 10 }: { count?: number }) => (
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, viewMode, toggleFullscreen]);
+  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, viewMode]);
 
   // HUD management
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
@@ -1297,13 +1298,16 @@ const SkeletonTagList = ({ count = 10 }: { count?: number }) => (
     const timeout = setTimeout(() => {
       setFadeIn(false);
       setTimeout(() => {
-        setCurrentIndex(prev => (prev + 1) % itemCount);
+        setCurrentIndex(prev => {
+          const len = itemsRef.current.length;
+          return len === 0 ? 0 : (prev + 1) % len;
+        });
         requestAnimationFrame(() => setFadeIn(true));
       }, FADE_DURATION_MS);
     }, slideshowSpeed);
 
     return () => clearTimeout(timeout);
-  }, [isSlideshow, slideshowSpeed, itemCount, waitForVideoEnd, isVideo, currentIndex]);
+  }, [isSlideshow, slideshowSpeed, waitForVideoEnd, isVideo, currentIndex]);
 
   useEffect(() => {
     setImageLoading(true);
