@@ -273,14 +273,17 @@ const TagSection = ({ title, tags, color, onTagClick }: { title: string; tags: s
   );
 };
 
-const Thumbnail = ({ item, className }: { item: LibraryItem; className?: string }) => {
+const Thumbnail = ({ item, className, onLoad }: { item: LibraryItem; className?: string; onLoad?: () => void }) => {
   const [src, setSrc] = useState<string>("");
+  const [loaded, setLoaded] = useState(false);
   const fileRel = item.file_rel;
   const fallbackUrl = item.url;
   const ext = (item.ext || "").toLowerCase();
 
   useEffect(() => {
     let active = true;
+    setSrc("");
+    setLoaded(false);
 
     if (["mp4", "webm", "gif"].includes(ext)) {
       setSrc(fallbackUrl);
@@ -301,8 +304,28 @@ const Thumbnail = ({ item, className }: { item: LibraryItem; className?: string 
     return () => { active = false; };
   }, [fileRel, fallbackUrl, ext]);
 
-  if (!src) return <div className={`bg-gray-800 animate-pulse ${className}`} />;
-  return <img src={src} className={className} loading="lazy" alt="" />;
+  const handleLoad = useCallback(() => {
+    setLoaded(true);
+    onLoad?.();
+  }, [onLoad]);
+
+  return (
+    <div className="relative">
+      {/* Skeleton shown until image is fully loaded */}
+      {!loaded && (
+        <div className={`${className} aspect-square animate-pulse bg-gray-700 rounded`} />
+      )}
+      {src && (
+        <img
+          src={src}
+          className={`${className} ${loaded ? "" : "absolute inset-0 opacity-0"}`}
+          loading="lazy"
+          alt=""
+          onLoad={handleLoad}
+        />
+      )}
+    </div>
+  );
 };
 
 function InfiniteSentinel({ onVisible, disabled }: { onVisible: () => void; disabled?: boolean }) {
