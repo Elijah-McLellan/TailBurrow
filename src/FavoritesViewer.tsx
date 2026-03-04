@@ -3,14 +3,15 @@ import { createPortal } from "react-dom";
 import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
-  Database, Loader2, Volume2, VolumeX, Clock, Pencil,
-  RefreshCw, Info, Undo, ArrowDownCircle
+  Database, Loader2, LayoutGrid, Volume2, VolumeX, Clock, 
+  Pencil, RefreshCw, Info, Undo, ArrowDownCircle
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import Masonry from "react-masonry-css";
 
+const APP_VERSION = "0.2.4";
 const TOAST_DURATION_MS = 4000;
 
 type Toast = {
@@ -257,14 +258,25 @@ const HelpTooltip = ({ text }: { text: React.ReactNode }) => {
   );
 };
 
+const tagCategoryStyles: Record<string, { bg: string; heading: string }> = {
+  'text-yellow-400': { bg: 'bg-yellow-400/30 hover:bg-yellow-400/45', heading: 'text-yellow-400' },
+  'text-pink-400': { bg: 'bg-pink-400/30 hover:bg-pink-400/45', heading: 'text-pink-400' },
+  'text-green-400': { bg: 'bg-green-400/30 hover:bg-green-400/45', heading: 'text-green-400' },
+  'text-red-400': { bg: 'bg-red-400/30 hover:bg-red-400/45', heading: 'text-red-400' },
+  'text-blue-300': { bg: 'bg-blue-400/30 hover:bg-blue-400/45', heading: 'text-blue-300' },
+  'text-gray-400': { bg: 'bg-gray-400/30 hover:bg-gray-400/45', heading: 'text-gray-400' },
+  'text-purple-300': { bg: 'bg-purple-400/30 hover:bg-purple-400/45', heading: 'text-purple-300' },
+};
+
 const TagSection = ({ title, tags, color, onTagClick }: { title: string; tags: string[]; color: string; onTagClick: (t: string) => void }) => {
   if (!tags || tags.length === 0) return null;
+  const styles = tagCategoryStyles[color] || { bg: 'bg-gray-500/20 hover:bg-gray-500/30', heading: color };
   return (
-    <div className="mb-2">
-      <div className={`text-[10px] uppercase font-bold tracking-wider mb-1 ${color}`}>{title}</div>
+    <div className="mb-3">
+      <div className={`text-[10px] uppercase font-bold tracking-wider mb-1.5 ${styles.heading}`}>{title}</div>
       <div className="flex flex-wrap gap-1.5">
         {tags.sort().map(tag => (
-          <button key={tag} onClick={() => onTagClick(tag)} className={`px-2 py-0.5 rounded text-xs hover:bg-gray-700 transition-colors ${color.replace('text-', 'text-opacity-80 text-')} border border-gray-700`}>
+          <button key={tag} onClick={() => onTagClick(tag)} className={`px-2.5 py-1 rounded-full text-xs text-white transition-colors ${styles.bg}`}>
             {tag}
           </button>
         ))}
@@ -348,10 +360,11 @@ function InfiniteSentinel({ onVisible, disabled }: { onVisible: () => void; disa
   return <div ref={ref} className="h-10 w-full" />;
 }
 
-const GridItem = React.memo(({ item, index, onSelect }: {
+const GridItem = React.memo(({ item, index, onSelect, isSelected }: {
   item: LibraryItem;
   index: number;
   onSelect: (index: number) => void;
+  isSelected?: boolean;
 }) => {
   const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -390,8 +403,7 @@ const GridItem = React.memo(({ item, index, onSelect }: {
   return (
     <div
       onClick={() => onSelect(index)}
-      className="relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-purple-500 transition-all"
-    >
+      className={`relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition-all ${isSelected ? 'ring-2 ring-purple-500 border border-purple-500' : 'border border-gray-700 hover:border-purple-500'}`}    >
       {isVid ? (
         <div className="relative">
           <video
@@ -522,6 +534,31 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
   );
 };
 
+// ─── RESIZE HANDLE ───────────────────────────────────────────
+const ResizeHandle = ({ onDrag }: { onDrag: (clientX: number) => void }) => {
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const onMouseMove = (ev: MouseEvent) => onDrag(ev.clientX);
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  return (
+    <div
+      onMouseDown={handleMouseDown}
+        className="w-1.5 flex-shrink-0 cursor-col-resize bg-[#1d1b2d] hover:bg-[#967abc] active:bg-[#967abc]/80 transition-colors"
+    />
+  );
+};
+
 // ─── SKELETON COMPONENTS ─────────────────────────────────────
 const Skeleton = ({ className = "", style }: { className?: string; style?: React.CSSProperties }) => (
   <div className={`animate-pulse bg-gray-700 rounded ${className}`} style={style} />
@@ -545,15 +582,15 @@ const skeletonAspects = [
   "aspect-[3/4]",
 ];
 
-const SkeletonGridItem = ({ index = 0 }: { index?: number }) => (
-  <div className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
-    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
+const SkeletonGridItem = ({ index = 0, dark }: { index?: number; dark?: boolean }) => (
+  <div className={`${dark ? 'bg-[#161621] border-[#1d1b2d]' : 'bg-gray-800 border-gray-700'} rounded-lg overflow-hidden border`}>
+    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} style={dark ? { backgroundColor: '#1d1b2d' } : undefined} />
   </div>
 );
 
-const SkeletonFeedPost = ({ index = 0 }: { index?: number }) => (
-  <div className="bg-gray-700 rounded overflow-hidden">
-    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} />
+const SkeletonFeedPost = ({ index = 0, dark }: { index?: number; dark?: boolean }) => (
+  <div className={`${dark ? 'bg-[#161621]' : 'bg-gray-700'} rounded overflow-hidden`}>
+    <Skeleton className={`w-full ${skeletonAspects[index % skeletonAspects.length]}`} style={dark ? { backgroundColor: '#1d1b2d' } : undefined} />
   </div>
 );
 
@@ -668,6 +705,18 @@ export default function FavoritesViewer() {
   const [autoscroll, setAutoscroll] = useState(false);
   const [autoscrollSpeed, setAutoscrollSpeed] = useState(1);
 
+  // Layout
+  const [viewerLayout, setViewerLayout] = useState<'classic' | 'studio'>(() =>
+    (localStorage.getItem('viewer_layout') as 'classic' | 'studio') || 'classic'
+  );
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
+    Number(localStorage.getItem('left_panel_width') || 350)
+  );
+  const [rightPanelWidth, setRightPanelWidth] = useState(() =>
+    Number(localStorage.getItem('right_panel_width') || 280)
+  );
+  const studioContainerRef = useRef<HTMLDivElement>(null);
+
   // FurAffinity
   const [faCreds, setFaCreds] = useState<FACreds>({ a: '', b: '' });
   const [faStatus, setFaStatus] = useState<FASyncStatus | null>(null);
@@ -677,6 +726,7 @@ export default function FavoritesViewer() {
   const [faLimit, setFaLimit] = useState("");
 
   // --- DERIVED STATE (stable) ---
+  const isStudio = viewerLayout === 'studio';
   const currentItem = items[currentIndex] || null;
   const itemCount = items.length;
   const ext = (currentItem?.ext || "").toLowerCase();
@@ -1054,6 +1104,7 @@ if (loadingFeedsRef.current[feedId]) return;
     if (!currentItem) return;
     const deletedId = currentItem.item_id;
     await invoke("trash_item", { itemId: deletedId });
+    setTrashCount(prev => prev + 1);
 
     // Optimistically remove from local state and clamp index
     setItems(prev => {
@@ -1076,6 +1127,7 @@ if (loadingFeedsRef.current[feedId]) return;
   const handleRestore = useCallback(async (itemId: number) => {
     await invoke("restore_item", { itemId });
     setTrashedItems(prev => prev.filter(i => i.item_id !== itemId));
+    setTrashCount(prev => Math.max(0, prev - 1));
     loadData(false);
   }, [loadData]);
 
@@ -1087,6 +1139,7 @@ if (loadingFeedsRef.current[feedId]) return;
     if (!ok) return;
     await invoke("empty_trash");
     setTrashedItems([]);
+    setTrashCount(0);
   }, []);
 
   // --- EDIT MODAL ---
@@ -1186,6 +1239,7 @@ if (loadingFeedsRef.current[feedId]) return;
       }
     };
     init();
+    invoke<number>("get_trash_count").then(setTrashCount).catch(() => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1289,6 +1343,16 @@ if (loadingFeedsRef.current[feedId]) return;
   // Persist preferences
   useEffect(() => { try { localStorage.setItem('preferred_sort_order', sortOrder); } catch { /* ignore */ } }, [sortOrder]);
   useEffect(() => { localStorage.setItem('blacklist_tags', blacklist); }, [blacklist]);
+  useEffect(() => { localStorage.setItem('viewer_layout', viewerLayout); }, [viewerLayout]);
+
+  useEffect(() => {
+    document.documentElement.style.backgroundColor = isStudio ? '#0f0f17' : '#111827';
+    document.body.style.backgroundColor = isStudio ? '#0f0f17' : '#111827';
+    return () => {
+      document.documentElement.style.backgroundColor = '';
+      document.body.style.backgroundColor = '';
+    };
+  }, [isStudio]);
 
   // Slideshow (removed currentIndex from deps to avoid timer reset) uses timeout so video-wait is re-evaluated each slide
   useEffect(() => {
@@ -1387,19 +1451,37 @@ if (loadingFeedsRef.current[feedId]) return;
     setViewMode('single');
   }, []);
 
-  const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || (activeTab === 'viewer' && viewMode === 'single');
-  // --- RENDER ---
+  const handleStudioItemSelect = useCallback((index: number) => {
+    setCurrentIndex(index);
+  }, []);
+
+  const handleLeftResize = useCallback((clientX: number) => {
+    if (!studioContainerRef.current) return;
+    const rect = studioContainerRef.current.getBoundingClientRect();
+    const newWidth = Math.max(200, Math.min(clientX - rect.left, rect.width * 0.5));
+    setLeftPanelWidth(newWidth);
+    localStorage.setItem('left_panel_width', String(Math.round(newWidth)));
+  }, []);
+
+  const handleRightResize = useCallback((clientX: number) => {
+    if (!studioContainerRef.current) return;
+    const rect = studioContainerRef.current.getBoundingClientRect();
+    const newWidth = Math.max(200, Math.min(rect.right - clientX, rect.width * 0.4));
+    setRightPanelWidth(newWidth);
+    localStorage.setItem('right_panel_width', String(Math.round(newWidth)));
+  }, []);
+
+  const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || (activeTab === 'viewer' && (viewMode === 'single' || viewerLayout === 'studio'));  // --- RENDER ---
   return (
-    <div className="min-h-screen bg-gray-900 text-white">
-      {/* Header */}
-      <div className="border-b border-gray-700">
-        <div className="max-w-7xl mx-auto px-4">
+    <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col bg-gray-900 text-white"}>      {/* Header */}
+      <div className={`border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
+        <div className={isStudio ? "px-4" : "max-w-7xl mx-auto px-4"}>
           <div className="flex items-center justify-between pt-4">
             <div className="flex gap-4">
-              <button onClick={() => setActiveTab('viewer')} className={`px-4 py-2 font-medium border-b-2 transition ${activeTab === 'viewer' ? 'border-purple-500 text-purple-400' : 'border-transparent text-gray-400 hover:text-gray-300'}`}>Viewer</button>
-              <button onClick={() => setActiveTab('feeds')} className={`px-4 py-2 font-medium border-b-2 transition flex items-center gap-2 ${activeTab === 'feeds' ? 'border-purple-500 text-purple-400' : 'border-transparent text-gray-400 hover:text-gray-300'}`}><Rss className="w-4 h-4" />Feeds</button>
+              <button onClick={() => setActiveTab('viewer')} className={`px-4 py-2 font-medium border-b-2 transition flex items-center gap-2 ${activeTab === 'viewer' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><LayoutGrid className="w-4 h-4" />Viewer</button>
+              <button onClick={() => setActiveTab('feeds')} className={`px-4 py-2 font-medium border-b-2 transition flex items-center gap-2 ${activeTab === 'feeds' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><Rss className="w-4 h-4" />Feeds</button>
             </div>
-            <button onClick={() => setShowSettings(true)} className="p-2 text-gray-400 hover:text-gray-200" title="Settings"><Settings className="w-5 h-5" /></button>
+            <button onClick={() => setShowSettings(true)} className={`p-2 ${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`} title="Settings"><Settings className="w-5 h-5" /></button>
           </div>
         </div>
       </div>
@@ -1407,11 +1489,11 @@ if (loadingFeedsRef.current[feedId]) return;
       {/* Viewer Tab */}
       {activeTab === 'viewer' && (
         <>
-          <div className="border-b border-gray-700">
-            <div className="max-w-7xl mx-auto p-4">
+          <div className={`border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
+            <div className={`${isStudio ? 'px-4' : 'max-w-7xl mx-auto'} p-4`}>
               <div className="flex gap-4 items-center flex-wrap">
                 <div className="flex-1 min-w-[200px] relative">
-                  <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                  <Search className={`absolute left-3 top-2.5 w-4 h-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`} />
                   <input
                     type="text"
                     placeholder="Search tags (e.g. fox -male rating:s)"
@@ -1424,24 +1506,21 @@ if (loadingFeedsRef.current[feedId]) return;
                         loadData(false);
                       }
                     }}
-                    className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:border-purple-500"
+                    className={`w-full pl-10 pr-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}
                   />
                 </div>
-                <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:border-purple-500">
+                <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
                   <option value="default">Default Order</option>
                   <option value="random">Random</option>
                   <option value="score">By Score</option>
                   <option value="newest">Newest First</option>
                   <option value="oldest">Oldest First</option>
                 </select>
-                <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className="px-4 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:border-purple-500">
+                <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
                   <option value="all">All Sources</option>
                   <option value="e621">e621 Only</option>
                   <option value="furaffinity">FurAffinity Only</option>
                 </select>
-                <div className="text-gray-400 text-sm">
-                  Loaded {itemCount} <span className="mx-1">•</span> Total {totalDatabaseItems}
-                </div>
               </div>
               {selectedTags.length > 0 && (
                 <div className="mt-3 flex gap-2 flex-wrap">
@@ -1456,18 +1535,195 @@ if (loadingFeedsRef.current[feedId]) return;
           </div>
 
           {(initialLoading || isSearching) ? (
-            <div className="max-w-7xl mx-auto p-4">
+            <div className={`${isStudio ? 'px-4 flex-1 overflow-hidden' : 'max-w-7xl mx-auto'} p-4`}>
               <Masonry
                 breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
                 className="flex w-auto gap-3"
                 columnClassName="flex flex-col gap-3"
               >
                 {Array.from({ length: gridColumns * 3 }).map((_, i) => (
-                  <SkeletonGridItem key={`init-skeleton-${i}`} index={i} />
+                  <SkeletonGridItem key={`init-skeleton-${i}`} index={i} dark={isStudio} />
                 ))}
               </Masonry>
             </div>
-          ) : itemCount > 0 ? (
+            ) : itemCount > 0 ? (
+            viewerLayout === 'studio' ? (
+              <div ref={studioContainerRef} className="flex flex-1 overflow-hidden">
+                {/* Left Panel - Grid */}
+                <div style={{ width: leftPanelWidth }} className="overflow-y-auto flex-shrink-0 border-r border-[#1d1b2d] bg-[#0f0f17]">
+                  <div className="p-2">
+                    <Masonry
+                      breakpointCols={Math.max(1, Math.floor(leftPanelWidth / 180))}
+                      className="flex w-auto gap-2"
+                      columnClassName="flex flex-col gap-2"
+                    >
+                      {items.map((item, index) => (
+                        <GridItem key={item.item_id} item={item} index={index} onSelect={handleStudioItemSelect} isSelected={index === currentIndex} />
+                      ))}
+                      {isLoadingMore && Array.from({ length: Math.max(1, Math.floor(leftPanelWidth / 180)) * 2 }).map((_, i) => (
+                        <SkeletonGridItem key={`skeleton-${i}`} index={i} dark />
+                      ))}
+                    </Masonry>
+                    {hasMoreItems && <InfiniteSentinel onVisible={loadMoreItems} disabled={isLoadingMore} />}
+                  </div>
+                </div>
+
+                <ResizeHandle onDrag={handleLeftResize} />
+
+                {/* Center Panel - Viewer */}
+                <div className="flex-1 flex flex-col overflow-hidden min-w-[200px] bg-[#0f0f17]">
+                  <div
+                    className={viewerOverlay ? "fixed inset-0 z-50 bg-black" : "flex-1 flex flex-col overflow-hidden min-h-0"}
+                    onMouseMove={() => viewerOverlay && pokeHud()}
+                    onMouseDown={() => viewerOverlay && pokeHud()}
+                    onWheel={() => viewerOverlay && pokeHud()}
+                    onTouchStart={() => viewerOverlay && pokeHud()}
+                  >
+                    {currentItem ? (
+                      <div className={viewerOverlay ? "relative w-full h-full" : "relative flex-1 flex flex-col min-h-0 overflow-hidden"}>
+                        {imageLoading && (
+                          <div className="absolute inset-0 flex items-center justify-center z-10">
+                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#967abc]" />
+                          </div>
+                        )}
+                        {viewerOverlay && (
+                          <>
+                            <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={() => goToPrev(true)} />
+                            <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} />
+                          </>
+                        )}
+                        <div className={viewerOverlay ? "w-full h-full flex items-center justify-center bg-black" : "flex-1 h-0 flex items-center justify-center bg-[#0a0a12] overflow-hidden"}>
+                          {isVideo ? (
+                            <video
+                              key={currentItem.url}
+                              src={currentItem.url}
+                              controls
+                              autoPlay
+                              loop={!waitForVideoEnd || !isSlideshow}
+                              muted={autoMuteVideos}
+                              className={`max-w-full max-h-[70vh] object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                              style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
+                              onLoadedData={(e) => { if (!autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
+                              onError={() => setImageLoading(false)}
+                              onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
+                            />
+                          ) : (
+                            <img
+                              key={currentItem.url}
+                              src={currentItem.url}
+                              alt=""
+                              className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                              onLoad={() => setImageLoading(false)}
+                              onError={(e) => {
+                                setImageLoading(false);
+                                e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E";
+                              }}
+                            />
+                          )}
+                        </div>
+
+                        {/* Controls */}
+                        <div
+                          className={viewerOverlay
+                            ? ["absolute bottom-6 left-1/2 -translate-x-1/2", "transition-all duration-300 ease-out", showHud ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"].join(" ")
+                            : "p-2 bg-[#161621] border-t border-[#1d1b2d] flex-shrink-0"
+                          }
+                          onMouseEnter={() => { if (viewerOverlay) { hudHoverRef.current = true; setShowHud(true); } }}
+                          onMouseLeave={() => { if (viewerOverlay) { hudHoverRef.current = false; scheduleHudHide(); } }}
+                        >
+                          <div
+                            className={viewerOverlay ? "relative z-20 px-6 py-4 bg-gray-900/80 backdrop-blur-md rounded-2xl border border-gray-700/50 shadow-2xl" : ""}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button onClick={() => goToPrev(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronLeft className="w-4 h-4" /></button>
+                              <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded">{isSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
+                              <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-2 py-1.5 bg-[#1d1b2d] border border-[#4c4b5a] rounded-xl text-sm">
+                                <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
+                              </select>
+                              <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
+                              <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
+                              <button onClick={async () => {
+                                try {
+                                  if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); setViewerOverlay(true); }
+                                  else { await document.exitFullscreen(); setViewerOverlay(false); }
+                                } catch (err) { console.warn("Fullscreen failed:", err); }
+                              }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><Maximize className="w-4 h-4" /></button>
+                              {!viewerOverlay && <button onClick={deleteCurrentItem} className="p-1.5 bg-[#1d1b2d] hover:bg-red-600 rounded text-[#9e98aa] hover:text-white transition-colors"><Trash2 className="w-4 h-4" /></button>}
+                              {!viewerOverlay && <button onClick={openEditModal} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded text-[#9e98aa] hover:text-white"><Pencil className="w-4 h-4" /></button>}
+                              <button onClick={() => goToNext(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronRight className="w-4 h-4" /></button>
+                              <span className="text-xs text-[#4c4b5a] ml-1">{currentIndex + 1}/{itemCount}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center text-[#4c4b5a]">
+                        <div className="text-center">
+                          <Database className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                          <p>Select an item to view</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <ResizeHandle onDrag={handleRightResize} />
+
+                {/* Right Panel - Tags & Info */}
+                <div style={{ width: rightPanelWidth }} className="overflow-y-auto flex-shrink-0 bg-[#161621] border-l border-[#1d1b2d] p-4">
+                  {currentItem ? (
+                    <>
+                      <div className="mb-4 pb-3 border-b border-[#1d1b2d]">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider flex-shrink-0 ${currentItem.source === 'e621' ? 'bg-blue-600' : 'bg-orange-600'}`}>
+                              {currentItem.source === 'e621' ? 'E6' : 'FA'}
+                            </span>
+                            <span className="text-sm font-medium truncate text-white">
+                              {(() => {
+                                const artists = (currentItem.artist && currentItem.artist.length > 0) ? currentItem.artist : currentItem.tags_artist;
+                                const filtered = (artists || []).filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
+                                return filtered.length > 0 ? filtered.join(", ") : "Unknown";
+                              })()}
+                            </span>
+                          </div>
+                          <button onClick={openEditModal} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded text-[#9e98aa] hover:text-white transition-colors flex-shrink-0" title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                        </div>
+                        <div className="flex gap-3 text-xs text-[#9e98aa]">
+                          <span>⭐ {currentItem.fav_count || 0}</span>
+                          <span>Score: {currentItem.score.total}</span>
+                          <span className={`font-bold uppercase ${currentItem.rating === 'e' ? 'text-red-400' : currentItem.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
+                            {currentItem.rating === 'e' ? 'Explicit' : currentItem.rating === 'q' ? 'Questionable' : 'Safe'}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                          {currentItem.source === 'e621' && (
+                            <button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.source_id}`)} className="text-[#967abc] hover:text-[#967abc]/80 underline">e621</button>
+                          )}
+                          {currentItem.sources?.filter(s => currentItem.source !== 'e621' || !s.includes('e621.net/posts')).slice(0, 3).map((source, i) => (
+                            <button key={i} onClick={() => openExternalUrl(source)} className="text-[#967abc] hover:text-[#967abc]/80 underline" title={source}>{getSocialMediaName(source)}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <h3 className="text-sm font-semibold mb-3 flex items-center gap-2 text-[#9e98aa]"><Tag className="w-3.5 h-3.5" /> Tags</h3>
+                      <TagSection title="Artists" tags={currentItem.tags_artist} color="text-yellow-400" onTagClick={toggleTag} />
+                      <TagSection title="Copyrights" tags={currentItem.tags_copyright} color="text-pink-400" onTagClick={toggleTag} />
+                      <TagSection title="Characters" tags={currentItem.tags_character} color="text-green-400" onTagClick={toggleTag} />
+                      <TagSection title="Species" tags={currentItem.tags_species} color="text-red-400" onTagClick={toggleTag} />
+                      <TagSection title="General" tags={currentItem.tags_general} color="text-blue-300" onTagClick={toggleTag} />
+                      <TagSection title="Meta" tags={currentItem.tags_meta} color="text-gray-400" onTagClick={toggleTag} />
+                      <TagSection title="Lore" tags={currentItem.tags_lore} color="text-purple-300" onTagClick={toggleTag} />
+                    </>
+                  ) : (
+                    <div className="text-[#4c4b5a] text-center mt-10">
+                      <Tag className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                      <p className="text-sm">Select an item to see tags</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
             <div className="max-w-7xl mx-auto p-4">
               {viewMode === 'grid' ? (
                 <>
@@ -1505,7 +1761,7 @@ if (loadingFeedsRef.current[feedId]) return;
                     >
                       {currentItem && (
                         <div className={viewerOverlay ? "relative w-full h-full" : "relative bg-black"}>
-                          {imageLoading && (
+                        {imageLoading && (
                             <div className="absolute inset-0 flex items-center justify-center z-10">
                               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500" />
                             </div>
@@ -1516,7 +1772,7 @@ if (loadingFeedsRef.current[feedId]) return;
                               <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} />
                             </>
                           )}
-                          <div className={viewerOverlay ? "w-full h-full flex items-center justify-center bg-black" : "w-full h-[75vh] flex items-center justify-center bg-black rounded-lg overflow-hidden relative"}>
+                          <div className={viewerOverlay ? "w-full h-full flex items-center justify-center bg-black" : "w-full h-[70vh] flex items-center justify-center bg-gray-950 rounded-t-lg overflow-hidden relative"}>
                             {isVideo ? (
                               <video
                                 key={currentItem.url}
@@ -1525,7 +1781,7 @@ if (loadingFeedsRef.current[feedId]) return;
                                 autoPlay
                                 loop={!waitForVideoEnd || !isSlideshow}
                                 muted={autoMuteVideos}
-                                className={`w-full h-auto object-contain transition-opacity duration-300 ${viewerOverlay ? 'max-h-full' : 'max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                                className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`}
                                 style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
                                 onLoadedData={(e) => { if (!autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
                                 onError={() => { setImageLoading(false); console.error("Video load error"); }}
@@ -1536,7 +1792,7 @@ if (loadingFeedsRef.current[feedId]) return;
                                 key={currentItem.url}
                                 src={currentItem.url}
                                 alt="Favorite"
-                                className={`w-full h-auto object-contain transition-opacity duration-200 ${viewerOverlay ? 'max-h-full' : 'max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                                className={`max-w-full max-h-[70vh] object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
                                 onLoad={() => setImageLoading(false)}
                                 onError={(e) => {
                                   setImageLoading(false);
@@ -1566,7 +1822,7 @@ if (loadingFeedsRef.current[feedId]) return;
                               <div className="flex items-center justify-center gap-2">
                                 {!viewerOverlay && <button onClick={() => goToPrev(true)} className="p-2 bg-gray-700 hover:bg-gray-600 rounded"><ChevronLeft className="w-5 h-5" /></button>}
                                 <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-2 bg-purple-600 hover:bg-purple-700 rounded">{isSlideshow ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}</button>
-                                <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded">
+                                <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-xl">
                                   <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
                                 </select>
                                 <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-2 rounded ${autoMuteVideos ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-700 hover:bg-gray-600'}`} title="Mute all videos">{autoMuteVideos ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}</button>
@@ -1641,7 +1897,7 @@ if (loadingFeedsRef.current[feedId]) return;
                             <Pencil className="w-3.5 h-3.5" />
                           </button>
                           {[...(currentItem.tags || [])].sort((a, b) => a.localeCompare(b)).map((tag, i) => (
-                            <button key={i} onClick={() => toggleTag(tag)} className={`px-2 py-1 rounded text-xs ${selectedTags.includes(tag) ? 'bg-purple-600' : 'bg-gray-700 hover:bg-gray-600'}`}>
+                            <button key={i} onClick={() => toggleTag(tag)}                             className={`px-2.5 py-1 rounded-full text-xs ${selectedTags.includes(tag) ? 'bg-purple-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-white'}`}>
                               {tag}
                             </button>
                           ))}
@@ -1685,6 +1941,7 @@ if (loadingFeedsRef.current[feedId]) return;
                 </div>
               )}
             </div>
+            )
           ) : (
             /* Empty State */
             <div className="text-center py-20 text-gray-400">
@@ -1831,7 +2088,7 @@ if (loadingFeedsRef.current[feedId]) return;
                     <p className="text-xs text-gray-500 mt-1">Use e621 search syntax.</p>
                   </div>
                   <div className="flex gap-3 justify-end">
-                    <button onClick={() => { setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(false); setEditingFeedId(null); }} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded">Cancel</button>
+                    <button onClick={() => { setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(false); setEditingFeedId(null); }} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>
                     <button
                       onClick={() => {
                         if (!newFeedQuery.trim()) { toast("Please enter a search query.", "error"); return; }
@@ -1845,7 +2102,7 @@ if (loadingFeedsRef.current[feedId]) return;
                         }
                         setNewFeedQuery(''); setNewFeedName(''); setShowAddFeedModal(false); setEditingFeedId(null);
                       }}
-                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded"
+                      className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
                     >
                       {editingFeedId ? 'Save Changes' : 'Create Feed'}
                     </button>
@@ -1861,20 +2118,20 @@ if (loadingFeedsRef.current[feedId]) return;
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setShowSettings(false)} />
-          <div className="relative z-10 w-full max-w-xl max-h-[90vh] bg-gray-800 border border-gray-700 rounded-lg flex flex-col">
-            <div className="flex items-center justify-between p-5 border-b border-gray-700 flex-shrink-0">
+          <div className={`relative z-10 w-full max-w-xl max-h-[90vh] rounded-xl flex flex-col ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
+            <div className={`flex items-center justify-between p-5 border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
               <h2 className="text-lg font-semibold">Settings</h2>
-              <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-200"><X className="w-5 h-5" /></button>
+              <button onClick={() => setShowSettings(false)} className={`${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`}><X className="w-5 h-5" /></button>
             </div>
             <div className="overflow-y-auto p-5 space-y-4">
               {/* Library */}
               <div>
                 <h3 className="text-lg font-semibold mb-2">Library</h3>
                 <div className="text-sm text-gray-400 mb-1">Library folder</div>
-                <div className="text-xs text-gray-200 break-all bg-gray-900 border border-gray-700 rounded p-2">{libraryRoot || "(not set)"}</div>
+                <div className={`text-xs text-gray-200 break-all rounded-xl p-2 ${isStudio ? 'bg-[#0f0f17] border border-[#1d1b2d]' : 'bg-gray-900 border border-gray-700'}`}>{libraryRoot || "(not set)"}</div>
                 <div className="flex gap-2 mt-3">
-                  <button onClick={changeLibraryRoot} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded">Change/Create Library</button>
-                  <button onClick={() => { setShowSettings(false); loadTrash(); }} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded flex items-center gap-2">
+                  <button onClick={changeLibraryRoot} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}>Change/Create Library</button>
+                  <button onClick={() => { setShowSettings(false); loadTrash(); }} className={`px-4 py-2 rounded-xl flex items-center gap-2 ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>
                     <Trash2 className="w-4 h-4" />Trash ({trashCount})
                   </button>
                   <button
@@ -1890,7 +2147,7 @@ if (loadingFeedsRef.current[feedId]) return;
                         toast("Failed to unload: " + String(e), "error");
                       }
                     }}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded"
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl"
                   >
                     Unload Library
                   </button>
@@ -1898,36 +2155,43 @@ if (loadingFeedsRef.current[feedId]) return;
               </div>
 
               {/* Viewer Settings */}
-              <div className="border-t border-gray-700 pt-4">
+              <div className={`border-t pt-4 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
                 <h3 className="text-lg font-semibold mb-2">Viewer</h3>
-                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm text-gray-400 mb-1 block">Layout</label>
+                    <select value={viewerLayout} onChange={(e) => setViewerLayout(e.target.value as 'classic' | 'studio')} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}>
+                      <option value="classic">Classic</option>
+                      <option value="studio">Studio (Three-pane)</option>
+                    </select>
+                  </div>
                   <div>
                     <label className="text-sm text-gray-400 mb-1 block">Default sort order</label>
-                    <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500">
+                    <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}>
                       <option value="default">Default</option><option value="random">Random</option><option value="score">Score</option><option value="newest">Newest</option><option value="oldest">Oldest</option>
                     </select>
                   </div>
                   <div>
                     <label className="text-sm text-gray-400 mb-1 block">Items per batch</label>
-                    <select value={itemsPerPage} onChange={(e) => handlePageSizeChange(Number(e.target.value))} className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500">
+                    <select value={itemsPerPage} onChange={(e) => handlePageSizeChange(Number(e.target.value))} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}>
                       <option value={50}>50</option><option value={100}>100 (Recommended)</option><option value={200}>200</option><option value={500}>500</option><option value={1000}>1000</option>
                     </select>
                   </div>
                   <div>
                     <label className="text-sm text-gray-400 mb-1 block flex justify-between"><span>Grid Columns</span><span className="font-mono text-purple-400">{gridColumns}</span></label>
                     <div className="flex items-center h-[42px]">
-                      <input type="range" min="1" max="8" value={gridColumns} onChange={(e) => { const val = Number(e.target.value); setGridColumns(val); localStorage.setItem('grid_columns', String(val)); }} className="w-full accent-purple-600 cursor-pointer" />
+                      <input type="range" min="1" max="8" value={gridColumns} onChange={(e) => { const val = Number(e.target.value); setGridColumns(val); localStorage.setItem('grid_columns', String(val)); }} className={`w-full cursor-pointer ${isStudio ? 'accent-[#967abc]' : 'accent-purple-600'}`} />
                     </div>
                   </div>
                   <div className="row-span-2">
                     <label className="text-sm text-gray-400 mb-1 block">Blacklist (Feeds Only)</label>
-                    <textarea value={blacklist} onChange={(e) => setBlacklist(e.target.value)} placeholder="Tags to hide..." className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded h-[42px] min-h-[42px] focus:outline-none focus:border-purple-500 text-sm resize-y" />
+                    <textarea value={blacklist} onChange={(e) => setBlacklist(e.target.value)} placeholder="Tags to hide..." className={`w-full px-3 py-2 rounded-xl h-[42px] min-h-[42px] focus:outline-none text-sm resize-y ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
                   </div>
                 </div>
               </div>
 
               {/* e621 Settings */}
-              <div className="border-t border-gray-700 pt-4">
+              <div className={`border-t pt-4 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
                 <div className="flex items-center mb-2">
                   <h3 className="text-lg font-semibold">e621</h3>
                   <HelpTooltip text={<div>1. Go to e621.net<br />2. Click <b>Settings</b> (top right)<br />3. Go to <b>Basic &gt; Account &gt; API Keys</b><br />4. Generate/Copy your API Key</div>} />
@@ -1935,7 +2199,7 @@ if (loadingFeedsRef.current[feedId]) return;
                 <div className="text-xs text-gray-400 mb-2">Used for Feeds, Favoriting, and Syncing your Favorites.</div>
 
                 {e621CredInfo.has_api_key && !isEditingE621 ? (
-                  <div className="flex items-center justify-between bg-gray-900 p-3 rounded border border-green-900/50 mb-3">
+                  <div className={`flex items-center justify-between p-3 rounded-xl mb-3 ${isStudio ? 'bg-[#0f0f17] border border-green-900/50' : 'bg-gray-900 border border-green-900/50'}`}>
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-green-500" />
                       <span className="text-sm text-gray-300">Credentials Saved ({e621CredInfo.username})</span>
@@ -1957,22 +2221,22 @@ if (loadingFeedsRef.current[feedId]) return;
                 ) : (
                   <div className="mb-3 animate-in fade-in slide-in-from-top-2 duration-200">
                     <div className="flex gap-2 mb-2">
-                      <input type="text" placeholder="Username" value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500" />
-                      <input type="password" placeholder="API Key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500" />
+                      <input type="text" placeholder="Username" value={apiUsername} onChange={(e) => setApiUsername(e.target.value)} className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
+                      <input type="password" placeholder="API Key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={async () => { await saveE621Credentials(); setIsEditingE621(false); }} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded">Save Credentials</button>
-                      {e621CredInfo.has_api_key && <button onClick={() => setIsEditingE621(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded">Cancel</button>}
+                      <button onClick={async () => { await saveE621Credentials(); setIsEditingE621(false); }} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}>Save Credentials</button>
+                      {e621CredInfo.has_api_key && <button onClick={() => setIsEditingE621(false)} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>}
                     </div>
                   </div>
                 )}
 
                 <div className="flex gap-2 items-center">
-                  <input type="text" placeholder="Limit (optional)" value={syncMaxNew} onChange={(e) => setSyncMaxNew(e.target.value)} className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500" />
+                  <input type="text" placeholder="Limit (optional)" value={syncMaxNew} onChange={(e) => setSyncMaxNew(e.target.value)} className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
                   <button onClick={startSync} disabled={!!syncStatus?.running || (!e621CredInfo.has_api_key && !isEditingE621)} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded disabled:opacity-50">
                     {syncStatus?.running ? "Scanning..." : "Start Import"}
                   </button>
-                  {syncStatus?.running && <button onClick={cancelSync} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded">Stop</button>}
+                  {syncStatus?.running && <button onClick={cancelSync} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl">Stop</button>}
                 </div>
 
                 {syncStatus && (syncStatus.running || syncStatus.scanned_pages > 0) && (
@@ -2020,14 +2284,14 @@ if (loadingFeedsRef.current[feedId]) return;
               )}
 
               {/* FurAffinity Settings */}
-              <div className="border-t border-gray-700 pt-4 mt-4">
+              <div className={`border-t pt-4 mt-4 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
                 <div className="flex items-center mb-2">
                   <h3 className="text-lg font-semibold">FurAffinity</h3>
                   <HelpTooltip text={<div>1. Login to FurAffinity in browser<br />2. Press <b>F12</b> (Dev Tools) &gt; <b>Application</b> tab<br />3. Under <b>Cookies</b>, find <b>furaffinity.net</b><br />4. Copy values for <b>a</b> and <b>b</b></div>} />
                 </div>
 
                 {faCredsSet && !isEditingFA ? (
-                  <div className="flex items-center justify-between bg-gray-900 p-3 rounded border border-green-900/50 mb-3">
+                  <div className={`flex items-center justify-between p-3 rounded-xl mb-3 ${isStudio ? 'bg-[#0f0f17] border border-green-900/50' : 'bg-gray-900 border border-green-900/50'}`}>
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-green-500" />
                       <span className="text-sm text-gray-300">Cookies Saved</span>
@@ -2045,8 +2309,8 @@ if (loadingFeedsRef.current[feedId]) return;
                 ) : (
                   <div className="mb-3 animate-in fade-in slide-in-from-top-2 duration-200">
                     <div className="flex gap-2 mb-2">
-                      <input type="text" placeholder="Cookie A" value={faCreds.a} onChange={e => setFaCreds(prev => ({ ...prev, a: e.target.value }))} className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded" />
-                      <input type="text" placeholder="Cookie B" value={faCreds.b} onChange={e => setFaCreds(prev => ({ ...prev, b: e.target.value }))} className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded" />
+                      <input type="text" placeholder="Cookie A" value={faCreds.a} onChange={e => setFaCreds(prev => ({ ...prev, a: e.target.value }))} className={`flex-1 px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d]' : 'bg-gray-700 border border-gray-600'}`} />
+                      <input type="text" placeholder="Cookie B" value={faCreds.b} onChange={e => setFaCreds(prev => ({ ...prev, b: e.target.value }))} className={`flex-1 px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d]' : 'bg-gray-700 border border-gray-600'}`} />
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -2058,21 +2322,21 @@ if (loadingFeedsRef.current[feedId]) return;
                           setIsEditingFA(false);
                           setFaCreds({ a: '', b: '' });
                         }}
-                        className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded"
+                        className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
                       >
                         Save Cookies
                       </button>
-                      {faCredsSet && <button onClick={() => setIsEditingFA(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded">Cancel</button>}
+                      {faCredsSet && <button onClick={() => setIsEditingFA(false)} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>}
                     </div>
                   </div>
                 )}
 
                 <div className="flex gap-2 items-center">
-                  <input type="text" placeholder="Limit (optional)" value={faLimit} onChange={(e) => setFaLimit(e.target.value)} className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500" />
+                  <input type="text" placeholder="Limit (optional)" value={faLimit} onChange={(e) => setFaLimit(e.target.value)} className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
                   <button onClick={startFaSync} disabled={faStatus?.running || (!faCredsSet && !isEditingFA)} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded disabled:opacity-50">
                     {faStatus?.running ? "Scanning..." : "Start Import"}
                   </button>
-                  {faStatus?.running && <button onClick={cancelFaSync} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded">Stop</button>}
+                  {faStatus?.running && <button onClick={cancelFaSync} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl">Stop</button>}
                 </div>
 
                 {faStatus && (faStatus.running || faStatus.scanned > 0) && (
@@ -2178,7 +2442,7 @@ if (loadingFeedsRef.current[feedId]) return;
             </div>
 
             <div className="flex justify-end gap-2 p-5 border-t border-gray-700">
-              <button onClick={() => setShowEditModal(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded">Cancel</button>
+              <button onClick={() => setShowEditModal(false)} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>
               <button onClick={saveMetadata} className="px-6 py-2 bg-purple-600 hover:bg-purple-700 rounded font-bold">Save Changes</button>
             </div>
           </div>
@@ -2229,6 +2493,16 @@ if (loadingFeedsRef.current[feedId]) return;
           </div>
         </div>
       )}
+
+      {/* Footer */}
+      <div className={`flex items-center justify-between px-4 py-2 text-xs border-t flex-shrink-0 ${isStudio ? 'bg-[#161621] border-[#1d1b2d] text-[#4c4b5a]' : 'bg-gray-800 border-gray-700 text-gray-500 mt-auto'}`}>
+        <span>TailBurrow v{APP_VERSION}</span>
+        <span>{itemCount} loaded • {totalDatabaseItems} total</span>
+        <button onClick={loadTrash} className={`flex items-center gap-1.5 transition-colors ${isStudio ? 'hover:text-[#967abc]' : 'hover:text-white'}`}>
+          <Trash2 className="w-3.5 h-3.5" />
+          Trash ({trashCount})
+        </button>
+      </div>
 
       <AutoscrollWidget
         active={true}
