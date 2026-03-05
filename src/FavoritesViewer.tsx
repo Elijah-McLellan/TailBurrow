@@ -2653,10 +2653,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
       {showEditModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setShowEditModal(false)} />
-          <div className="relative z-10 w-full max-w-2xl max-h-[90vh] bg-gray-800 border border-gray-700 rounded-lg flex flex-col shadow-2xl">
-            <div className="flex items-center justify-between p-5 border-b border-gray-700">
+          <div className={`relative z-10 w-full max-w-2xl max-h-[90vh] rounded-xl flex flex-col shadow-2xl ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
+            <div className={`flex items-center justify-between p-5 border-b ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
               <h2 className="text-xl font-bold">Edit Post Metadata</h2>
-              <button onClick={() => setShowEditModal(false)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+              <button onClick={() => setShowEditModal(false)} className={`${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-white'}`}><X className="w-5 h-5" /></button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -2688,13 +2688,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
                         setNewSourceInput("");
                       }
                     }}
-                    className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500 text-sm"
+                    className={`flex-1 px-3 py-2 rounded-xl focus:outline-none text-sm ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
                   />
-                  <button onClick={() => { if (newSourceInput.trim() && !editingSources.includes(newSourceInput.trim())) { setEditingSources([...editingSources, newSourceInput.trim()]); setNewSourceInput(""); } }} className="px-3 py-2 bg-gray-600 hover:bg-gray-500 rounded text-sm">Add</button>
+                  <button onClick={() => { if (newSourceInput.trim() && !editingSources.includes(newSourceInput.trim())) { setEditingSources([...editingSources, newSourceInput.trim()]); setNewSourceInput(""); } }} className={`px-3 py-2 rounded-xl text-sm ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-600 hover:bg-gray-500'}`}>Add</button>
                 </div>
                 <div className="space-y-1">
                   {editingSources.map((src, i) => (
-                    <div key={i} className="flex items-center justify-between bg-gray-900/50 px-3 py-2 rounded border border-gray-700">
+                    <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-xl ${isStudio ? 'bg-[#0f0f17] border border-[#1d1b2d]' : 'bg-gray-900/50 border border-gray-700'}`}>
                       <a href={src} target="_blank" rel="noreferrer" className="text-xs text-blue-400 hover:underline truncate mr-2">{src}</a>
                       <button onClick={() => setEditingSources(prev => prev.filter(s => s !== src))} className="text-gray-500 hover:text-red-400"><X className="w-4 h-4" /></button>
                     </div>
@@ -2719,13 +2719,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
                         setNewTagInput("");
                       }
                     }}
-                    className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500 text-sm"
+                    className={`flex-1 px-3 py-2 rounded-xl focus:outline-none text-sm ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
                   />
-                  <button onClick={() => { const t = newTagInput.trim().toLowerCase(); if (t && !editingTags.includes(t)) { setEditingTags([...editingTags, t]); setNewTagInput(""); } }} className="px-3 py-2 bg-gray-600 hover:bg-gray-500 rounded text-sm">Add</button>
+                  <button onClick={() => { const t = newTagInput.trim().toLowerCase(); if (t && !editingTags.includes(t)) { setEditingTags([...editingTags, t]); setNewTagInput(""); } }} className={`px-3 py-2 rounded-xl text-sm ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-600 hover:bg-gray-500'}`}>Add</button>
                 </div>
-                <div className="flex flex-wrap gap-2 p-3 bg-gray-900/50 rounded border border-gray-700 min-h-[100px] content-start">
+                <div className={`flex flex-wrap gap-2 p-3 rounded-xl min-h-[100px] content-start ${isStudio ? 'bg-[#0f0f17] border border-[#1d1b2d]' : 'bg-gray-900/50 border border-gray-700'}`}>
                   {editingTags.map(tag => (
-                    <span key={tag} className="px-2 py-1 bg-purple-900/30 border border-purple-500/30 rounded text-sm flex items-center gap-1">
+                    <span key={tag} className={`px-2.5 py-1 rounded-full text-sm flex items-center gap-1 ${isStudio ? 'bg-[#967abc]/20 border border-[#967abc]/30' : 'bg-purple-900/30 border border-purple-500/30'}`}>
                       {tag}
                       <button onClick={() => setEditingTags(prev => prev.filter(t => t !== tag))} className="hover:text-red-400 ml-1"><X className="w-3 h-3" /></button>
                     </span>
@@ -2734,9 +2734,9 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 p-5 border-t border-gray-700">
+            <div className={`flex justify-end gap-2 p-5 border-t ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
               <button onClick={() => setShowEditModal(false)} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>
-              <button onClick={saveMetadata} className="px-6 py-2 bg-purple-600 hover:bg-purple-700 rounded font-bold">Save Changes</button>
+              <button onClick={saveMetadata} className={`px-6 py-2 rounded-xl font-bold ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}>Save Changes</button>
             </div>
           </div>
         </div>
