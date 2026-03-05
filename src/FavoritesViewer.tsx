@@ -523,21 +523,44 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
 
   if (!autoscroll) {
     return (
-      <button onClick={() => setAutoscroll(true)} className={`fixed bottom-12 right-6 p-3 rounded-full shadow-lg border transition-all z-40 ${isStudio ? 'bg-[#161621] hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white border-[#1d1b2d]' : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border-gray-600'}`} title="Start Autoscroll">
-        <ChevronsDown className="w-5 h-5" />
+      <button
+        onClick={() => setAutoscroll(true)}
+        className={`fixed bottom-12 right-4 px-3 py-2 rounded-xl shadow-lg border transition-all z-40 flex items-center gap-2 text-xs font-medium ${
+          isStudio
+            ? 'bg-[#161621] hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white border-[#1d1b2d]'
+            : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border-gray-600'
+        }`}
+        title="Start Autoscroll"
+      >
+        <ChevronsDown className="w-4 h-4" />
+        Scroll
       </button>
     );
   }
 
   return (
-    <div className={`fixed bottom-12 right-6 backdrop-blur border rounded-xl shadow-xl p-3 flex flex-col items-center gap-2 z-40 animate-in fade-in slide-in-from-bottom-4 ${isStudio ? 'bg-[#161621]/90 border-[#1d1b2d]' : 'bg-gray-900/90 border-gray-600'}`}>
-      <div className="h-32 w-8 relative flex justify-center">
-        <input type="range" min="1" max="10" step="0.5" {...{ orient: "vertical" } as any} value={autoscrollSpeed} onChange={(e) => setAutoscrollSpeed(Number(e.target.value))} className={`absolute w-32 h-8 -rotate-90 origin-center top-12 cursor-pointer ${isStudio ? 'accent-[#967abc]' : 'accent-green-500'}`} />
+    <div className={`fixed bottom-12 right-4 backdrop-blur border rounded-xl shadow-xl z-40 animate-in fade-in slide-in-from-bottom-4 ${
+      isStudio ? 'bg-[#161621]/95 border-[#1d1b2d]' : 'bg-gray-900/95 border-gray-600'
+    }`}>
+      <div className="flex items-center gap-2 p-2">
+        <button
+          onClick={() => setAutoscroll(false)}
+          className={`p-1.5 rounded-lg transition-colors ${isStudio ? 'hover:bg-[#1d1b2d] text-red-400' : 'hover:bg-gray-700 text-red-400'}`}
+          title="Stop"
+        >
+          <Pause className="w-4 h-4" />
+        </button>
+        <input
+          type="range"
+          min="1"
+          max="10"
+          step="0.5"
+          value={autoscrollSpeed}
+          onChange={(e) => setAutoscrollSpeed(Number(e.target.value))}
+          className={`w-24 h-1.5 cursor-pointer ${isStudio ? 'accent-[#967abc]' : 'accent-purple-500'}`}
+        />
+        <span className={`text-[10px] font-mono w-6 text-right ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>{autoscrollSpeed}x</span>
       </div>
-      <button onClick={() => setAutoscroll(false)} className="p-2 bg-red-600 hover:bg-red-700 rounded-full text-white shadow-md" title="Stop">
-        <Pause className="w-5 h-5" />
-      </button>
-      <span className={`text-[10px] font-mono ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>{autoscrollSpeed}x</span>
     </div>
   );
 };
