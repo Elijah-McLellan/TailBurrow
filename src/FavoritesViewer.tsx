@@ -470,11 +470,6 @@ const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, o
       className="relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-purple-500 transition-all"
       onClick={() => onSelect?.(post)}
     >
-      {downloaded && (
-        <div className="absolute top-2 left-2 z-20 bg-black/60 text-gray-200 p-1.5 rounded-full">
-          <Database className="w-3 h-3" />
-        </div>
-      )}
       {imageUrl ? (
         <>
           <img
@@ -499,8 +494,12 @@ const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, o
         </div>
       )}
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none">
+        {downloaded && (
+          <div className="absolute top-2 left-2 bg-green-500/80 text-white p-1.5 rounded-full">
+            <Database className="w-3.5 h-3.5" />
+          </div>
+        )}
         <div className="flex items-center gap-1.5 mb-1">
-          <span className="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-blue-600">E6</span>
           <span className="text-white text-sm font-medium truncate">
             {artists.length > 0 ? artists.slice(0, 2).join(", ") : "Unknown"}
           </span>
