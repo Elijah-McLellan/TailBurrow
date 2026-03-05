@@ -1574,7 +1574,8 @@ if (loadingFeedsRef.current[feedId]) return;
     localStorage.setItem('feed_detail_width', String(Math.round(newWidth)));
   }, []);
 
-  const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || (activeTab === 'viewer' && (viewMode === 'single' || viewerLayout === 'studio'));  // --- RENDER ---
+const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
+  // --- RENDER ---
   return (
     <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col bg-gray-900 text-white"}>      {/* Header */}
       <div className={`border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
@@ -2745,12 +2746,15 @@ if (loadingFeedsRef.current[feedId]) return;
       {showTrashModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setShowTrashModal(false)} />
-          <div className="relative z-10 w-full max-w-4xl max-h-[90vh] bg-gray-800 border border-gray-700 rounded-lg flex flex-col">
-            <div className="flex items-center justify-between p-5 border-b border-gray-700 flex-shrink-0">
-              <h2 className="text-lg font-semibold flex items-center gap-2"><Trash2 className="w-5 h-5 text-gray-400" />Trash Manager</h2>
+          <div className={`relative z-10 w-full max-w-4xl max-h-[90vh] rounded-xl flex flex-col ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
+            <div className={`flex items-center justify-between p-5 border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Trash2 className={`w-5 h-5 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`} />
+                Trash
+              </h2>
               <div className="flex gap-2">
-                <button onClick={handleEmptyTrash} disabled={trashedItems.length === 0} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded disabled:opacity-50 text-sm font-medium">Empty Trash</button>
-                <button onClick={() => setShowTrashModal(false)} className="text-gray-400 hover:text-gray-200"><X className="w-5 h-5" /></button>
+                <button onClick={handleEmptyTrash} disabled={trashedItems.length === 0} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl disabled:opacity-50 text-sm font-medium">Empty Trash</button>
+                <button onClick={() => setShowTrashModal(false)} className={`${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`}><X className="w-5 h-5" /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-5">
@@ -2759,7 +2763,7 @@ if (loadingFeedsRef.current[feedId]) return;
                   {trashedItems.map((item) => {
                     const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
                     return (
-                      <div key={item.item_id} className="relative group bg-gray-700 rounded overflow-hidden border border-gray-600">
+                      <div key={item.item_id} className={`relative group rounded-lg overflow-hidden border ${isStudio ? 'bg-[#1c1b26] border-[#1d1b2d]' : 'bg-gray-700 border-gray-600'}`}>
                         {isVid ? (
                           <video src={item.url} className="w-full h-auto object-cover opacity-60" />
                         ) : (
@@ -2768,7 +2772,7 @@ if (loadingFeedsRef.current[feedId]) return;
                         <div className="absolute inset-0 flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 bg-black/50 transition-opacity">
                           <button onClick={() => handleRestore(item.item_id)} className="p-2 bg-green-600 hover:bg-green-700 rounded-full text-white" title="Restore"><Undo className="w-5 h-5" /></button>
                         </div>
-                        <div className="absolute bottom-0 left-0 right-0 p-1 bg-black/60 text-xs text-gray-300 text-center">
+                        <div className={`absolute bottom-0 left-0 right-0 p-1.5 text-xs text-center ${isStudio ? 'bg-[#0f0f17]/80 text-[#9e98aa]' : 'bg-black/60 text-gray-300'}`}>
                           {item.source} #{item.source_id}
                         </div>
                       </div>
@@ -2776,7 +2780,7 @@ if (loadingFeedsRef.current[feedId]) return;
                   })}
                 </Masonry>
               ) : (
-                <div className="text-center py-20 text-gray-500">
+                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
                   <Trash2 className="w-16 h-16 mx-auto mb-4 opacity-20" />
                   <p>Trash is empty</p>
                 </div>
