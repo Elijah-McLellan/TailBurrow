@@ -4,7 +4,7 @@ import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
   Database, Loader2, LayoutGrid, Volume2, VolumeX, Clock, 
-  Pencil, RefreshCw, Info, Undo, ArrowDownCircle
+  Pencil, RefreshCw, Info, Undo, ChevronsDown
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
@@ -516,7 +516,7 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
   if (!autoscroll) {
     return (
       <button onClick={() => setAutoscroll(true)} className="fixed bottom-6 right-6 p-3 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white rounded-full shadow-lg border border-gray-600 transition-all z-40" title="Start Autoscroll">
-        <ArrowDownCircle className="w-6 h-6" />
+        <ChevronsDown className="w-6 h-6" />
       </button>
     );
   }
@@ -646,6 +646,9 @@ export default function FavoritesViewer() {
   const [selectedFeedId, setSelectedFeedId] = useState<number | null>(null);
   const [showAddFeedModal, setShowAddFeedModal] = useState(false);
   const [editingFeedId, setEditingFeedId] = useState<number | null>(null);
+  const [feedSearchInput, setFeedSearchInput] = useState('');
+  const [feedSearchResults, setFeedSearchResults] = useState<E621Post[]>([]);
+  const [feedSearchLoading, setFeedSearchLoading] = useState(false);
 
   // Settings & System
   const [showSettings, setShowSettings] = useState(false);
@@ -1043,16 +1046,52 @@ if (loadingFeedsRef.current[feedId]) return;
         await loadData(false);
       }
       await invoke("e621_favorite", { postId: id });
-      setFeedPosts(prev => ({
-        ...prev,
-        [feedId]: (prev[feedId] || []).map((p) => p.id === id ? { ...p, is_favorited: true } : p),
-      }));
+      if (feedId === -1) {
+        setFeedSearchResults(prev => prev.map(p => p.id === id ? { ...p, is_favorited: true } : p));
+      } else {
+        setFeedPosts(prev => ({
+          ...prev,
+          [feedId]: (prev[feedId] || []).map((p) => p.id === id ? { ...p, is_favorited: true } : p),
+        }));
+      }
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), "error");
     } finally {
       setFeedActionBusy(prev => ({ ...prev, [id]: false }));
     }
-  }, [downloadedE621Ids, loadData]);
+  }, [downloadedE621Ids, loadData, toast]);
+
+  const searchFeedPosts = useCallback(async (query: string) => {
+    if (!e621CredInfo.username || !e621CredInfo.has_api_key) {
+      if (!credWarned) {
+        toast("Set e621 credentials in Settings first.", "error");
+        setCredWarned(true);
+      }
+      return;
+    }
+    if (!query.trim()) return;
+
+    setFeedSearchLoading(true);
+    setSelectedFeedId(null);
+
+    try {
+      const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: query.trim(), limit: FEED_PAGE_LIMIT, page: "1" });
+      const rawPosts = data.posts || [];
+
+      const blTags = blacklist.toLowerCase().split(/[\s\n]+/).filter(Boolean);
+      const filteredPosts = rawPosts.filter((post) => {
+        if (blTags.length === 0) return true;
+        const pTags = [...post.tags.general, ...post.tags.species, ...post.tags.character, ...post.tags.artist, ...post.tags.copyright, ...post.tags.meta, ...post.tags.lore];
+        return !pTags.some((t) => blTags.includes(t));
+      });
+
+      setFeedSearchResults(filteredPosts);
+    } catch (e) {
+      toast("Search error: " + (e instanceof Error ? e.message : String(e)), "error");
+    } finally {
+      setFeedSearchLoading(false);
+    }
+  }, [e621CredInfo, credWarned, blacklist, toast]);
 
   // --- LIBRARY MANAGEMENT ---
   const refreshLibraryRoot = useCallback(async () => {
@@ -1476,12 +1515,65 @@ if (loadingFeedsRef.current[feedId]) return;
     <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col bg-gray-900 text-white"}>      {/* Header */}
       <div className={`border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
         <div className={isStudio ? "px-4" : "max-w-7xl mx-auto px-4"}>
-          <div className="flex items-center justify-between pt-4">
-            <div className="flex gap-4">
-              <button onClick={() => setActiveTab('viewer')} className={`px-4 py-2 font-medium border-b-2 transition flex items-center gap-2 ${activeTab === 'viewer' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><LayoutGrid className="w-4 h-4" />Viewer</button>
-              <button onClick={() => setActiveTab('feeds')} className={`px-4 py-2 font-medium border-b-2 transition flex items-center gap-2 ${activeTab === 'feeds' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><Rss className="w-4 h-4" />Feeds</button>
+          <div className="flex items-center gap-4 py-2">
+            <div className="flex gap-1 flex-shrink-0">
+              <button onClick={() => setActiveTab('viewer')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'viewer' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><LayoutGrid className="w-3.5 h-3.5" />Viewer</button>
+              <button onClick={() => setActiveTab('feeds')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'feeds' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><Rss className="w-3.5 h-3.5" />e621</button>
             </div>
-            <button onClick={() => setShowSettings(true)} className={`p-2 ${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`} title="Settings"><Settings className="w-5 h-5" /></button>
+
+            <div className="flex flex-1 items-center gap-2 min-w-0">
+              {activeTab === 'viewer' ? (
+                <>
+                  <div className="flex-1 min-w-[150px] relative">
+                    <Search className={`absolute left-3 top-2 w-3.5 h-3.5 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`} />
+                    <input
+                      type="text"
+                      placeholder="Search tags..."
+                      value={searchTags}
+                      onChange={(e) => setSearchTags(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          setItems([]);
+                          setHasMoreItems(true);
+                          loadData(false);
+                        }
+                      }}
+                      className={`w-full pl-9 pr-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}
+                    />
+                  </div>
+                  <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
+                    <option value="default">Default</option>
+                    <option value="random">Random</option>
+                    <option value="score">Score</option>
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                  </select>
+                  <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
+                    <option value="all">All</option>
+                    <option value="e621">e621</option>
+                    <option value="furaffinity">FurAffinity</option>
+                  </select>
+                </>
+              ) : (
+                <div className="flex-1 min-w-[150px] relative">
+                  <Search className={`absolute left-3 top-2 w-3.5 h-3.5 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`} />
+                  <input
+                    type="text"
+                    placeholder="Search e621 tags..."
+                    value={feedSearchInput}
+                    onChange={(e) => setFeedSearchInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && feedSearchInput.trim()) {
+                        searchFeedPosts(feedSearchInput);
+                      }
+                    }}
+                    className={`w-full pl-9 pr-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}
+                  />
+                </div>
+              )}
+            </div>
+
+            <button onClick={() => setShowSettings(true)} className={`p-1.5 flex-shrink-0 ${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`} title="Settings"><Settings className="w-4 h-4" /></button>
           </div>
         </div>
       </div>
@@ -1489,50 +1581,15 @@ if (loadingFeedsRef.current[feedId]) return;
       {/* Viewer Tab */}
       {activeTab === 'viewer' && (
         <>
-          <div className={`border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
-            <div className={`${isStudio ? 'px-4' : 'max-w-7xl mx-auto'} p-4`}>
-              <div className="flex gap-4 items-center flex-wrap">
-                <div className="flex-1 min-w-[200px] relative">
-                  <Search className={`absolute left-3 top-2.5 w-4 h-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`} />
-                  <input
-                    type="text"
-                    placeholder="Search tags (e.g. fox -male rating:s)"
-                    value={searchTags}
-                    onChange={(e) => setSearchTags(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        setItems([]);
-                        setHasMoreItems(true);
-                        loadData(false);
-                      }
-                    }}
-                    className={`w-full pl-10 pr-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}
-                  />
-                </div>
-                <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
-                  <option value="default">Default Order</option>
-                  <option value="random">Random</option>
-                  <option value="score">By Score</option>
-                  <option value="newest">Newest First</option>
-                  <option value="oldest">Oldest First</option>
-                </select>
-                <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
-                  <option value="all">All Sources</option>
-                  <option value="e621">e621 Only</option>
-                  <option value="furaffinity">FurAffinity Only</option>
-                </select>
-              </div>
-              {selectedTags.length > 0 && (
-                <div className="mt-3 flex gap-2 flex-wrap">
-                  {selectedTags.map(tag => (
-                    <button key={tag} onClick={() => toggleTag(tag)} className="px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded-full text-sm flex items-center gap-1">
-                      {tag}<X className="w-3 h-3" />
-                    </button>
-                  ))}
-                </div>
-              )}
+          {selectedTags.length > 0 && (
+            <div className={`px-4 py-2 flex gap-2 flex-wrap border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
+              {selectedTags.map(tag => (
+                <button key={tag} onClick={() => toggleTag(tag)} className={`px-3 py-1 rounded-full text-sm flex items-center gap-1 ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}>
+                  {tag}<X className="w-3 h-3" />
+                </button>
+              ))}
             </div>
-          </div>
+          )}
 
           {(initialLoading || isSearching) ? (
             <div className={`${isStudio ? 'px-4 flex-1 overflow-hidden' : 'max-w-7xl mx-auto'} p-4`}>
@@ -1601,7 +1658,7 @@ if (loadingFeedsRef.current[feedId]) return;
                               autoPlay
                               loop={!waitForVideoEnd || !isSlideshow}
                               muted={autoMuteVideos}
-                              className={`max-w-full max-h-[70vh] object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                              className={`object-contain transition-opacity duration-300 ${viewerOverlay ? 'w-full h-full' : 'max-w-full max-h-full'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
                               style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
                               onLoadedData={(e) => { if (!autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
                               onError={() => setImageLoading(false)}
@@ -1612,7 +1669,7 @@ if (loadingFeedsRef.current[feedId]) return;
                               key={currentItem.url}
                               src={currentItem.url}
                               alt=""
-                              className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                              className={`object-contain transition-opacity duration-200 ${viewerOverlay ? 'w-full h-full' : 'max-w-full max-h-full'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
                               onLoad={() => setImageLoading(false)}
                               onError={(e) => {
                                 setImageLoading(false);
@@ -1792,7 +1849,7 @@ if (loadingFeedsRef.current[feedId]) return;
                                 key={currentItem.url}
                                 src={currentItem.url}
                                 alt="Favorite"
-                                className={`max-w-full max-h-[70vh] object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                                className={`object-contain transition-opacity duration-300 ${viewerOverlay ? 'w-full h-full' : 'max-w-full max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
                                 onLoad={() => setImageLoading(false)}
                                 onError={(e) => {
                                   setImageLoading(false);
@@ -1978,134 +2035,189 @@ if (loadingFeedsRef.current[feedId]) return;
 
       {/* Feeds Tab */}
       {activeTab === 'feeds' && (
-        <div className="max-w-7xl mx-auto p-4">
-          <div className="flex justify-center items-center gap-2 mb-6 flex-wrap">
-            {feeds.map((feed) => (
-              <button
-                key={feed.id}
-                onClick={() => {
-                  setSelectedFeedId(feed.id);
-                  if (!feedPosts[feed.id] || feedPosts[feed.id].length === 0) {
-                    fetchFeedPosts(feed.id, feed.query, { reset: true });
-                  }
-                }}
-                className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${selectedFeedId === feed.id ? 'bg-purple-600 text-white shadow-lg scale-105' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
-              >
-                {feed.name}
-              </button>
-            ))}
-            <button
-              onClick={() => { setEditingFeedId(null); setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(true); }}
-              className="px-4 py-2 rounded-full text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 transition-all flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />Add Feed
-            </button>
-          </div>
-
-          {selectedFeedId && feeds.find(f => f.id === selectedFeedId) ? (
-            <div className="bg-gray-800 rounded-lg p-4">
-              {(() => {
-                const feed = feeds.find(f => f.id === selectedFeedId)!;
+        <div className={isStudio ? "flex-1 overflow-y-auto" : "flex-1 overflow-y-auto"}>
+          <div className={isStudio ? "p-4" : "max-w-7xl mx-auto p-4"}>
+            {/* Feed pills */}
+            <div className="flex justify-center items-center gap-2 mb-4 flex-wrap">
+              {feeds.map((feed) => {
+                const isActive = selectedFeedId === feed.id && !feedSearchInput;
                 return (
-                  <>
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h2 className="text-2xl font-bold">{feed.name}</h2>
-                        <p className="text-sm text-gray-400 mt-1">{feed.query}</p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => fetchFeedPosts(feed.id, feed.query, { reset: true })} disabled={loadingFeeds[feed.id]} title="Refresh" className="p-2 bg-gray-700 hover:bg-gray-600 rounded">
-                          {loadingFeeds[feed.id] ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
-                        </button>
-                        <button onClick={() => { setNewFeedName(feed.name); setNewFeedQuery(feed.query); setEditingFeedId(feed.id); setShowAddFeedModal(true); }} className="p-2 bg-gray-700 hover:bg-gray-600 rounded" title="Edit feed"><Pencil className="w-5 h-5" /></button>
-                        <button onClick={() => { removeFeed(feed.id); setSelectedFeedId(null); }} className="p-2 bg-red-600 hover:bg-red-700 rounded" title="Delete feed"><Trash2 className="w-5 h-5" /></button>
-                      </div>
-                    </div>
-
-                    {feedPosts[feed.id] && feedPosts[feed.id].length > 0 ? (
-                      <>
-                        <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
-                          {feedPosts[feed.id].map((post) => (
-                            <FeedPostItem
-                              key={post.id}
-                              post={post}
-                              feedId={feed.id}
-                              downloaded={downloadedE621Ids.has(post.id)}
-                              busy={!!feedActionBusy[post.id]}
-                              onFavorite={ensureFavorite}
-                              onOpenUrl={openExternalUrl}
-                            />
-                          ))}
-                        </Masonry>
-                        <InfiniteSentinel
-                          disabled={!e621CredInfo.username || !e621CredInfo.has_api_key || !!loadingFeeds[feed.id] || !!feedPaging[feed.id]?.done}
-                          onVisible={() => fetchFeedPosts(feed.id, feed.query)}
-                        />
-                        {feedPaging[feed.id]?.done && <div className="text-center text-gray-500 text-sm py-4">End of results</div>}
-                      </>
-                    ) : loadingFeeds[feed.id] ? (
-                      <Masonry
-                        breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
-                        className="flex w-auto gap-3"
-                        columnClassName="flex flex-col gap-3"
+                  <button
+                    key={feed.id}
+                    onClick={() => {
+                      if (isActive) {
+                        fetchFeedPosts(feed.id, feed.query, { reset: true });
+                      } else {
+                        setFeedSearchInput('');
+                        setFeedSearchResults([]);
+                        setSelectedFeedId(feed.id);
+                        if (!feedPosts[feed.id] || feedPosts[feed.id].length === 0) {
+                          fetchFeedPosts(feed.id, feed.query, { reset: true });
+                        }
+                      }
+                    }}
+                    className={`px-4 py-2 rounded-full text-sm font-medium transition-all group ${
+                      isActive
+                        ? (isStudio ? 'bg-[#967abc] text-white shadow-lg' : 'bg-purple-600 text-white shadow-lg')
+                        : (isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
+                    }`}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      {feed.name}
+                      {isActive && loadingFeeds[feed.id] && <Loader2 className="w-3 h-3 animate-spin" />}
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setNewFeedName(feed.name);
+                          setNewFeedQuery(feed.query);
+                          setEditingFeedId(feed.id);
+                          setShowAddFeedModal(true);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-white/20 rounded"
                       >
-                        {Array.from({ length: gridColumns * 2 }).map((_, i) => (
-                          <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} />
-                        ))}
-                      </Masonry>
-                    ) : (
-                      <div className="text-center py-20 text-gray-400 italic">"Nobody here but us dergs"</div>
-                    )}
-                  </>
+                        <Pencil className="w-3 h-3" />
+                      </span>
+                    </span>
+                  </button>
                 );
-              })()}
+              })}
+              <button
+                onClick={() => { setEditingFeedId(null); setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(true); }}
+                className={`p-2 rounded-full text-sm transition-all ${isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
-          ) : null}
 
-          {!selectedFeedId && feeds.length > 0 && <div className="text-center py-20 text-gray-400"><p className="text-xl mb-2">Select a feed to view posts</p></div>}
-          {feeds.length === 0 && (
-            <div className="text-center py-20 text-gray-400">
-              <Rss className="w-16 h-16 mx-auto mb-4 opacity-50" />
-              <p className="text-xl">No feeds yet</p>
-              <p className="text-sm mt-2">Click the "Add Feed" button above to get started</p>
-            </div>
-          )}
+            {/* Content */}
+            {feedSearchInput ? (
+              feedSearchLoading ? (
+                <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                  {Array.from({ length: gridColumns * 2 }).map((_, i) => (
+                    <SkeletonFeedPost key={`search-skeleton-${i}`} index={i} dark={isStudio} />
+                  ))}
+                </Masonry>
+              ) : feedSearchResults.length > 0 ? (
+                <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                  {feedSearchResults.map((post) => (
+                    <FeedPostItem
+                      key={post.id}
+                      post={post}
+                      feedId={-1}
+                      downloaded={downloadedE621Ids.has(post.id)}
+                      busy={!!feedActionBusy[post.id]}
+                      onFavorite={ensureFavorite}
+                      onOpenUrl={openExternalUrl}
+                    />
+                  ))}
+                </Masonry>
+              ) : (
+                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>
+                  <Search className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                  <p>No results found</p>
+                </div>
+              )
+            ) : selectedFeedId && feeds.find(f => f.id === selectedFeedId) ? (
+              (() => {
+                const feed = feeds.find(f => f.id === selectedFeedId)!;
+                return feedPosts[feed.id] && feedPosts[feed.id].length > 0 ? (
+                  <>
+                    <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                      {feedPosts[feed.id].map((post) => (
+                        <FeedPostItem
+                          key={post.id}
+                          post={post}
+                          feedId={feed.id}
+                          downloaded={downloadedE621Ids.has(post.id)}
+                          busy={!!feedActionBusy[post.id]}
+                          onFavorite={ensureFavorite}
+                          onOpenUrl={openExternalUrl}
+                        />
+                      ))}
+                    </Masonry>
+                    <InfiniteSentinel
+                      disabled={!e621CredInfo.username || !e621CredInfo.has_api_key || !!loadingFeeds[feed.id] || !!feedPaging[feed.id]?.done}
+                      onVisible={() => fetchFeedPosts(feed.id, feed.query)}
+                    />
+                    {feedPaging[feed.id]?.done && <div className={`text-center text-sm py-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>End of results</div>}
+                  </>
+                ) : loadingFeeds[feed.id] ? (
+                  <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                    {Array.from({ length: gridColumns * 2 }).map((_, i) => (
+                      <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} dark={isStudio} />
+                    ))}
+                  </Masonry>
+                ) : (
+                  <div className={`text-center py-20 italic ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>"Nobody here but us dergs"</div>
+                );
+              })()
+            ) : (
+              <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>
+                {feeds.length > 0 ? (
+                  <><p className="text-xl mb-2">Select a feed or search above</p></>
+                ) : (
+                  <>
+                    <Rss className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                    <p className="text-xl">No feeds yet</p>
+                    <p className="text-sm mt-2">Click the + button above to create one</p>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Add/Edit Feed Modal */}
           {showAddFeedModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-black/60" onClick={() => { setShowAddFeedModal(false); setEditingFeedId(null); setNewFeedName(''); setNewFeedQuery(''); }} />
-              <div className="relative z-10 w-full max-w-xl bg-gray-800 border border-gray-700 rounded-lg p-6">
-                <h2 className="text-2xl font-bold mb-4">{editingFeedId ? 'Edit Feed' : 'Add New Feed'}</h2>
+              <div className={`relative z-10 w-full max-w-xl rounded-xl p-6 ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
+                <h2 className="text-xl font-bold mb-4">{editingFeedId ? 'Edit Feed' : 'Add New Feed'}</h2>
                 <div className="space-y-4">
                   <div>
-                    <label className="text-sm text-gray-400 mb-1 block">Feed Name</label>
-                    <input type="text" placeholder="e.g., Cute Foxes" value={newFeedName} onChange={(e) => setNewFeedName(e.target.value)} className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500" />
+                    <label className={`text-sm mb-1 block ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>Feed Name</label>
+                    <input type="text" placeholder="e.g., Cute Foxes" value={newFeedName} onChange={(e) => setNewFeedName(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
                   </div>
                   <div>
-                    <label className="text-sm text-gray-400 mb-1 block">Search Query</label>
-                    <input type="text" placeholder="e.g., fox cute rating:s score:>200" value={newFeedQuery} onChange={(e) => setNewFeedQuery(e.target.value)} className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-purple-500" />
-                    <p className="text-xs text-gray-500 mt-1">Use e621 search syntax.</p>
+                    <label className={`text-sm mb-1 block ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>Search Query</label>
+                    <input type="text" placeholder="e.g., fox cute rating:s score:>200" value={newFeedQuery} onChange={(e) => setNewFeedQuery(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
+                    <p className={`text-xs mt-1 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>Use e621 search syntax.</p>
                   </div>
-                  <div className="flex gap-3 justify-end">
-                    <button onClick={() => { setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(false); setEditingFeedId(null); }} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>
-                    <button
-                      onClick={() => {
-                        if (!newFeedQuery.trim()) { toast("Please enter a search query.", "error"); return; }
-                        if (editingFeedId) {
-                          saveFeeds(feeds.map(f => f.id === editingFeedId ? { ...f, name: newFeedName.trim() || newFeedQuery, query: newFeedQuery.trim() } : f));
-                        } else {
-                          const feed = { id: Date.now(), name: newFeedName.trim() || newFeedQuery, query: newFeedQuery.trim() };
-                          saveFeeds([...feeds, feed]);
-                          setSelectedFeedId(feed.id);
-                          fetchFeedPosts(feed.id, feed.query, { reset: true });
-                        }
-                        setNewFeedQuery(''); setNewFeedName(''); setShowAddFeedModal(false); setEditingFeedId(null);
-                      }}
-                      className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
-                    >
-                      {editingFeedId ? 'Save Changes' : 'Create Feed'}
-                    </button>
+                  <div className="flex justify-between">
+                    {editingFeedId ? (
+                      <button
+                        onClick={() => {
+                          removeFeed(editingFeedId);
+                          if (selectedFeedId === editingFeedId) setSelectedFeedId(null);
+                          setShowAddFeedModal(false);
+                          setEditingFeedId(null);
+                          setNewFeedName('');
+                          setNewFeedQuery('');
+                        }}
+                        className="px-4 py-2 rounded-xl text-red-400 hover:bg-red-600 hover:text-white transition-colors"
+                      >
+                        Delete Feed
+                      </button>
+                    ) : <div />}
+                    <div className="flex gap-3">
+                      <button onClick={() => { setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(false); setEditingFeedId(null); }} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>
+                      <button
+                        onClick={() => {
+                          if (!newFeedQuery.trim()) { toast("Please enter a search query.", "error"); return; }
+                          if (editingFeedId) {
+                            saveFeeds(feeds.map(f => f.id === editingFeedId ? { ...f, name: newFeedName.trim() || newFeedQuery, query: newFeedQuery.trim() } : f));
+                          } else {
+                            const feed = { id: Date.now(), name: newFeedName.trim() || newFeedQuery, query: newFeedQuery.trim() };
+                            saveFeeds([...feeds, feed]);
+                            setSelectedFeedId(feed.id);
+                            fetchFeedPosts(feed.id, feed.query, { reset: true });
+                          }
+                          setNewFeedQuery(''); setNewFeedName(''); setShowAddFeedModal(false); setEditingFeedId(null);
+                        }}
+                        className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
+                      >
+                        {editingFeedId ? 'Save Changes' : 'Create Feed'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
