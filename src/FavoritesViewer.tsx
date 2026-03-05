@@ -1487,16 +1487,35 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [sortOrder, filterSource, selectedTags]);
 
   // Autoscroll
+  // Autoscroll
+  const autoscrollTargetRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!autoscroll) return;
     let frameId: number;
     const scroll = () => {
-      window.scrollBy(0, autoscrollSpeed);
+      if (isStudio || activeTab === 'feeds') {
+        // Find the scrollable container
+        if (!autoscrollTargetRef.current) {
+          const candidates = document.querySelectorAll('.overflow-y-auto');
+          for (const el of candidates) {
+            if (el.scrollHeight > el.clientHeight) {
+              autoscrollTargetRef.current = el as HTMLElement;
+              break;
+            }
+          }
+        }
+        autoscrollTargetRef.current?.scrollBy(0, autoscrollSpeed);
+      } else {
+        window.scrollBy(0, autoscrollSpeed);
+      }
       frameId = requestAnimationFrame(scroll);
     };
     frameId = requestAnimationFrame(scroll);
-    return () => cancelAnimationFrame(frameId);
-  }, [autoscroll, autoscrollSpeed]);
+    return () => {
+      cancelAnimationFrame(frameId);
+      autoscrollTargetRef.current = null;
+    };
+  }, [autoscroll, autoscrollSpeed, isStudio, activeTab]);
 
   // --- RENDER HELPERS ---
   const handleGridItemSelect = useCallback((index: number) => {
