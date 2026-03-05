@@ -29,7 +29,7 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
       {toasts.map(toast => (
         <div
           key={toast.id}
-          className={`flex items-start gap-3 px-4 py-3 rounded-lg shadow-xl border backdrop-blur-sm animate-in slide-in-from-right fade-in duration-200 cursor-pointer ${
+          className={`flex items-start gap-3 px-4 py-3 rounded-xl shadow-xl border backdrop-blur-sm animate-in slide-in-from-right fade-in duration-200 cursor-pointer ${
             toast.type === 'error'
               ? 'bg-red-900/90 border-red-700 text-red-100'
               : toast.type === 'success'
@@ -1159,7 +1159,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
   const openExternalUrl = useCallback(async (url: string) => {
     try { await openUrl(url); } catch (e) { console.error("Failed to open URL:", e); toast("Failed to open link.", "error"); }
-  }, []);
+  }, [toast]);
 
   const handlePageSizeChange = useCallback(async (newSize: number) => {
     setItemsPerPage(newSize);
@@ -2069,13 +2069,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
             <div className="text-center py-20 text-gray-400">
               {!libraryRoot ? (
                 <div className="animate-in fade-in zoom-in duration-300">
-                  <Database className="w-20 h-20 mx-auto mb-6 text-purple-500 opacity-80" />
+                  <Database className={`w-20 h-20 mx-auto mb-6 opacity-80 ${isStudio ? 'text-[#967abc]' : 'text-purple-500'}`} />
                   <h2 className="text-3xl font-bold text-white mb-3">Welcome!</h2>
-                  <p className="text-gray-400 mb-8 max-w-md mx-auto">
+                  <p className={`mb-8 max-w-md mx-auto ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
                     To get started, select a folder where your favorites will be stored.
                     <br /><span className="text-sm opacity-75">(You can create a new empty folder or select an existing one)</span>
                   </p>
-                  <button onClick={changeLibraryRoot} className="px-8 py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-purple-500/20 transition-all transform hover:-translate-y-1">
+                  <button onClick={changeLibraryRoot} className={`px-8 py-4 text-white rounded-xl font-bold text-lg shadow-lg transition-all transform hover:-translate-y-1 ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80 hover:shadow-[#967abc]/20' : 'bg-purple-600 hover:bg-purple-700 hover:shadow-purple-500/20'}`}>
                     Select Library Folder
                   </button>
                 </div>
@@ -2083,13 +2083,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
                 <div>
                   <Upload className="w-16 h-16 mx-auto mb-4 opacity-50" />
                   <p className="text-xl font-semibold text-gray-200">Library is Ready</p>
-                  <p className="text-sm mt-2 mb-6 text-gray-400">
+                  <p className={`text-sm mt-2 mb-6 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
                     Your database is set up at:<br />
-                    <span className="font-mono text-xs bg-gray-800 px-2 py-1 rounded mt-1 inline-block">{libraryRoot}</span>
+                    <span className={`font-mono text-xs px-2 py-1 rounded-lg mt-1 inline-block ${isStudio ? 'bg-[#1c1b26]' : 'bg-gray-800'}`}>{libraryRoot}</span>
                   </p>
-                  <div className="p-4 bg-gray-800 rounded-lg max-w-md mx-auto border border-gray-700">
+                  <div className={`p-4 rounded-xl max-w-md mx-auto border ${isStudio ? 'bg-[#161621] border-[#1d1b2d]' : 'bg-gray-800 border-gray-700'}`}>
                     <p className="text-sm mb-3">Go to <b>Settings → e621</b> to log in and sync your favorites.</p>
-                    <button onClick={() => setShowSettings(true)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded transition-colors">Open Settings</button>
+                    <button onClick={() => setShowSettings(true)} className={`px-4 py-2 rounded-xl text-white transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Open Settings</button>
                   </div>
                 </div>
               )}
@@ -2549,24 +2549,24 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
               {showUnavailable && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
                   <div className="absolute inset-0 bg-black/60" onClick={() => setShowUnavailable(false)} />
-                  <div className="relative z-10 w-full max-w-3xl bg-gray-800 border border-gray-700 rounded-lg p-5">
+                  <div className={`relative z-10 w-full max-w-3xl rounded-xl p-5 ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
                     <div className="flex items-center justify-between mb-4">
                       <h2 className="text-lg font-semibold">Unavailable favorites</h2>
-                      <button onClick={() => setShowUnavailable(false)} className="text-gray-400 hover:text-gray-200"><X className="w-5 h-5" /></button>
+                      <button onClick={() => setShowUnavailable(false)} className={`${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`}><X className="w-5 h-5" /></button>
                     </div>
                     <div className="max-h-[60vh] overflow-y-auto space-y-3">
                       {unavailableList.length === 0 ? (
-                        <div className="text-gray-400">No unavailable posts recorded.</div>
+                        <div className={isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}>No unavailable posts recorded.</div>
                       ) : (
                         unavailableList.map((u) => (
-                          <div key={`${u.source}:${u.source_id}`} className="bg-gray-900 border border-gray-700 rounded p-3">
+                          <div key={`${u.source}:${u.source_id}`} className={`rounded-xl p-3 ${isStudio ? 'bg-[#0f0f17] border border-[#1d1b2d]' : 'bg-gray-900 border border-gray-700'}`}>
                             <div className="text-sm text-gray-200">
-                              <span className="text-gray-400">{u.source}</span> #{u.source_id} <span className="text-gray-500">• {u.reason}</span> <span className="text-gray-500">• {u.seen_at}</span>
+                              <span className={isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}>{u.source}</span> #{u.source_id} <span className={isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}>• {u.reason}</span> <span className={isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}>• {u.seen_at}</span>
                             </div>
-                            <div className="mt-2 text-xs text-gray-300 space-y-1">
+                            <div className="mt-2 text-xs space-y-1">
                               {u.sources.length > 0 ? u.sources.map((s, i) => (
-                                <div key={i}><button onClick={() => openExternalUrl(s)} className="text-purple-400 underline break-all cursor-pointer bg-transparent border-none p-0 text-left">{s}</button></div>
-                              )) : <div className="text-gray-500">No source links.</div>}
+                                <div key={i}><button onClick={() => openExternalUrl(s)} className={`underline break-all cursor-pointer bg-transparent border-none p-0 text-left ${isStudio ? 'text-[#967abc]' : 'text-purple-400'}`}>{s}</button></div>
+                              )) : <div className={isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}>No source links.</div>}
                             </div>
                           </div>
                         ))
