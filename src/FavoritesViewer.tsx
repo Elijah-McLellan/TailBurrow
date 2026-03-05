@@ -4,7 +4,7 @@ import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
   Database, Loader2, LayoutGrid, Volume2, VolumeX, Clock, 
-  Pencil, RefreshCw, Info, Undo, ChevronsDown
+  Pencil, Info, Undo, ChevronsDown
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
@@ -451,26 +451,28 @@ const GridItem = React.memo(({ item, index, onSelect, isSelected }: {
   );
 });
 
-const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, onOpenUrl }: {
+const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, onSelect }: {
   post: E621Post;
   feedId: number;
   downloaded: boolean;
   busy: boolean;
   onFavorite: (feedId: number, post: E621Post) => void;
-  onOpenUrl: (url: string) => void;
+  onSelect?: (post: E621Post) => void;
 }) => {
   const isRemoteFav = post.is_favorited;
   const imageUrl = post.sample.url || post.file.url || post.preview.url;
-  const sourceUrl = `https://e621.net/posts/${post.id}`;
-  const artists = post.tags.artist;
+  const artists = post.tags.artist.filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
   const w = post.sample.width || post.file.width || 1;
   const h = post.sample.height || post.file.height || 1;
 
   return (
-    <div className="relative group bg-gray-700 rounded overflow-hidden">
+    <div
+      className="relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-purple-500 transition-all"
+      onClick={() => onSelect?.(post)}
+    >
       {downloaded && (
-        <div className="absolute top-2 left-2 z-20 bg-gray-900/70 text-gray-200 px-2 py-1 rounded flex items-center gap-1">
-          <Database className="w-4 h-4" />
+        <div className="absolute top-2 left-2 z-20 bg-black/60 text-gray-200 p-1.5 rounded-full">
+          <Database className="w-3 h-3" />
         </div>
       )}
       {imageUrl ? (
@@ -478,58 +480,65 @@ const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, o
           <img
             src={imageUrl}
             alt=""
-            className="w-full object-cover rounded"
+            className="w-full object-cover"
             style={{ aspectRatio: `${w} / ${h}` }}
             loading="lazy"
             referrerPolicy="no-referrer"
           />
           <button
-            onClick={() => onFavorite(feedId, post)}
+            onClick={(e) => { e.stopPropagation(); onFavorite(feedId, post); }}
             disabled={busy}
-            className={`absolute top-2 right-2 p-2 rounded-full transition z-20 ${isRemoteFav ? "bg-yellow-500 text-yellow-900" : "bg-gray-900/70 text-gray-300 hover:bg-gray-900/90"} ${busy ? "opacity-60 cursor-not-allowed" : ""}`}
+            className={`absolute top-2 right-2 p-1.5 rounded-full transition z-20 ${isRemoteFav ? "bg-yellow-500 text-yellow-900" : "bg-black/60 text-gray-300 hover:bg-black/80"} ${busy ? "opacity-60 cursor-not-allowed" : ""}`}
           >
-            {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Star className={`w-5 h-5 ${isRemoteFav ? "fill-current" : ""}`} />}
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Star className={`w-4 h-4 ${isRemoteFav ? "fill-current" : ""}`} />}
           </button>
-          <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col items-center justify-center gap-2 z-10 bg-black/50">
-            <p className="text-xs text-white">Score: {post.score.total} | ❤️ {post.fav_count}</p>
-            {artists.length > 0 && <p className="text-xs text-gray-300">{artists.slice(0, 2).join(", ")}</p>}
-            <button onClick={() => onOpenUrl(sourceUrl)} className="px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded text-xs text-white">
-              View Source
-            </button>
-          </div>
         </>
       ) : (
         <div className="w-full h-48 flex items-center justify-center bg-gray-800">
           <p className="text-gray-500 text-sm">No image</p>
         </div>
       )}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-blue-600">E6</span>
+          <span className="text-white text-sm font-medium truncate">
+            {artists.length > 0 ? artists.slice(0, 2).join(", ") : "Unknown"}
+          </span>
+        </div>
+        <div className="flex justify-between items-center text-xs text-gray-300 border-t border-white/20 pt-1">
+          <span>⭐ {post.fav_count} • Score: {post.score.total}</span>
+          <span className={`font-bold uppercase ${post.rating === 'e' ? 'text-red-400' : post.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
+            {post.rating || 'S'}
+          </span>
+        </div>
+      </div>
     </div>
   );
 });
 
-const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, setAutoscrollSpeed, hidden }: {
+const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, setAutoscrollSpeed, hidden, isStudio }: {
   active: boolean; autoscroll: boolean; setAutoscroll: (v: boolean) => void;
-  autoscrollSpeed: number; setAutoscrollSpeed: (v: number) => void; hidden: boolean;
+  autoscrollSpeed: number; setAutoscrollSpeed: (v: number) => void; hidden: boolean; isStudio?: boolean;
 }) => {
   if (!active || hidden) return null;
 
   if (!autoscroll) {
     return (
-      <button onClick={() => setAutoscroll(true)} className="fixed bottom-6 right-6 p-3 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white rounded-full shadow-lg border border-gray-600 transition-all z-40" title="Start Autoscroll">
-        <ChevronsDown className="w-6 h-6" />
+      <button onClick={() => setAutoscroll(true)} className={`fixed bottom-12 right-6 p-3 rounded-full shadow-lg border transition-all z-40 ${isStudio ? 'bg-[#161621] hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white border-[#1d1b2d]' : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border-gray-600'}`} title="Start Autoscroll">
+        <ChevronsDown className="w-5 h-5" />
       </button>
     );
   }
 
   return (
-    <div className="fixed bottom-6 right-6 bg-gray-900/90 backdrop-blur border border-gray-600 rounded-xl shadow-xl p-3 flex flex-col items-center gap-2 z-40 animate-in fade-in slide-in-from-bottom-4">
+    <div className={`fixed bottom-12 right-6 backdrop-blur border rounded-xl shadow-xl p-3 flex flex-col items-center gap-2 z-40 animate-in fade-in slide-in-from-bottom-4 ${isStudio ? 'bg-[#161621]/90 border-[#1d1b2d]' : 'bg-gray-900/90 border-gray-600'}`}>
       <div className="h-32 w-8 relative flex justify-center">
-        <input type="range" min="1" max="10" step="0.5" {...{ orient: "vertical" } as any} value={autoscrollSpeed} onChange={(e) => setAutoscrollSpeed(Number(e.target.value))} className="absolute w-32 h-8 -rotate-90 origin-center top-12 accent-green-500 cursor-pointer" />
+        <input type="range" min="1" max="10" step="0.5" {...{ orient: "vertical" } as any} value={autoscrollSpeed} onChange={(e) => setAutoscrollSpeed(Number(e.target.value))} className={`absolute w-32 h-8 -rotate-90 origin-center top-12 cursor-pointer ${isStudio ? 'accent-[#967abc]' : 'accent-green-500'}`} />
       </div>
       <button onClick={() => setAutoscroll(false)} className="p-2 bg-red-600 hover:bg-red-700 rounded-full text-white shadow-md" title="Stop">
         <Pause className="w-5 h-5" />
       </button>
-      <span className="text-[10px] font-mono text-gray-400">{autoscrollSpeed}x</span>
+      <span className={`text-[10px] font-mono ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>{autoscrollSpeed}x</span>
     </div>
   );
 };
@@ -649,6 +658,11 @@ export default function FavoritesViewer() {
   const [feedSearchInput, setFeedSearchInput] = useState('');
   const [feedSearchResults, setFeedSearchResults] = useState<E621Post[]>([]);
   const [feedSearchLoading, setFeedSearchLoading] = useState(false);
+  const [selectedFeedPost, setSelectedFeedPost] = useState<E621Post | null>(null);
+  const [feedDetailWidth, setFeedDetailWidth] = useState(() =>
+    Number(localStorage.getItem('feed_detail_width') || 500)
+  );
+  const feedsContainerRef = useRef<HTMLDivElement>(null);
 
   // Settings & System
   const [showSettings, setShowSettings] = useState(false);
@@ -1073,6 +1087,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
     setFeedSearchLoading(true);
     setSelectedFeedId(null);
+    setSelectedFeedPost(null);
 
     try {
       const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: query.trim(), limit: FEED_PAGE_LIMIT, page: "1" });
@@ -1501,13 +1516,21 @@ if (loadingFeedsRef.current[feedId]) return;
     setLeftPanelWidth(newWidth);
     localStorage.setItem('left_panel_width', String(Math.round(newWidth)));
   }, []);
-
+  
   const handleRightResize = useCallback((clientX: number) => {
     if (!studioContainerRef.current) return;
     const rect = studioContainerRef.current.getBoundingClientRect();
     const newWidth = Math.max(200, Math.min(rect.right - clientX, rect.width * 0.4));
     setRightPanelWidth(newWidth);
     localStorage.setItem('right_panel_width', String(Math.round(newWidth)));
+  }, []);
+
+  const handleFeedDetailResize = useCallback((clientX: number) => {
+    if (!feedsContainerRef.current) return;
+    const rect = feedsContainerRef.current.getBoundingClientRect();
+    const newWidth = Math.max(300, Math.min(rect.right - clientX, rect.width * 0.65));
+    setFeedDetailWidth(newWidth);
+    localStorage.setItem('feed_detail_width', String(Math.round(newWidth)));
   }, []);
 
   const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || (activeTab === 'viewer' && (viewMode === 'single' || viewerLayout === 'studio'));  // --- RENDER ---
@@ -2035,136 +2058,252 @@ if (loadingFeedsRef.current[feedId]) return;
 
       {/* Feeds Tab */}
       {activeTab === 'feeds' && (
-        <div className={isStudio ? "flex-1 overflow-y-auto" : "flex-1 overflow-y-auto"}>
-          <div className={isStudio ? "p-4" : "max-w-7xl mx-auto p-4"}>
-            {/* Feed pills */}
-            <div className="flex justify-center items-center gap-2 mb-4 flex-wrap">
-              {feeds.map((feed) => {
-                const isActive = selectedFeedId === feed.id && !feedSearchInput;
-                return (
-                  <button
-                    key={feed.id}
-                    onClick={() => {
-                      if (isActive) {
-                        fetchFeedPosts(feed.id, feed.query, { reset: true });
-                      } else {
-                        setFeedSearchInput('');
-                        setFeedSearchResults([]);
-                        setSelectedFeedId(feed.id);
-                        if (!feedPosts[feed.id] || feedPosts[feed.id].length === 0) {
+        <div ref={feedsContainerRef} className={`flex-1 flex overflow-hidden ${isStudio ? 'bg-[#0f0f17]' : ''}`}>
+          {/* Feed grid pane */}
+          <div className={`${selectedFeedPost ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto`} style={selectedFeedPost ? { width: `calc(100% - ${feedDetailWidth}px - 6px)` } : undefined}>
+            <div className={isStudio ? "p-4" : "max-w-7xl mx-auto p-4"}>
+              {/* Feed pills */}
+              <div className="flex justify-center items-center gap-2 mb-4 flex-wrap">
+                {feeds.map((feed) => {
+                  const isActive = selectedFeedId === feed.id && !feedSearchInput;
+                  return (
+                    <button
+                      key={feed.id}
+                      onClick={() => {
+                        if (isActive) {
                           fetchFeedPosts(feed.id, feed.query, { reset: true });
+                        } else {
+                          setFeedSearchInput('');
+                          setFeedSearchResults([]);
+                          setSelectedFeedPost(null);
+                          setSelectedFeedId(feed.id);
+                          if (!feedPosts[feed.id] || feedPosts[feed.id].length === 0) {
+                            fetchFeedPosts(feed.id, feed.query, { reset: true });
+                          }
                         }
-                      }
-                    }}
-                    className={`px-4 py-2 rounded-full text-sm font-medium transition-all group ${
-                      isActive
-                        ? (isStudio ? 'bg-[#967abc] text-white shadow-lg' : 'bg-purple-600 text-white shadow-lg')
-                        : (isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
-                    }`}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      {feed.name}
-                      {isActive && loadingFeeds[feed.id] && <Loader2 className="w-3 h-3 animate-spin" />}
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setNewFeedName(feed.name);
-                          setNewFeedQuery(feed.query);
-                          setEditingFeedId(feed.id);
-                          setShowAddFeedModal(true);
-                        }}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-white/20 rounded"
-                      >
-                        <Pencil className="w-3 h-3" />
+                      }}
+                      className={`px-4 py-2 rounded-full text-sm font-medium transition-all group ${
+                        isActive
+                          ? (isStudio ? 'bg-[#967abc] text-white shadow-lg' : 'bg-purple-600 text-white shadow-lg')
+                          : (isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {feed.name}
+                        {isActive && loadingFeeds[feed.id] && <Loader2 className="w-3 h-3 animate-spin" />}
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setNewFeedName(feed.name);
+                            setNewFeedQuery(feed.query);
+                            setEditingFeedId(feed.id);
+                            setShowAddFeedModal(true);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-white/20 rounded"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </span>
                       </span>
-                    </span>
-                  </button>
-                );
-              })}
-              <button
-                onClick={() => { setEditingFeedId(null); setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(true); }}
-                className={`p-2 rounded-full text-sm transition-all ${isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-            </div>
+                    </button>
+                  );
+                })}
+                <button
+                  onClick={() => { setEditingFeedId(null); setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(true); }}
+                  className={`p-2 rounded-full text-sm transition-all ${isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
 
-            {/* Content */}
-            {feedSearchInput ? (
-              feedSearchLoading ? (
-                <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
-                  {Array.from({ length: gridColumns * 2 }).map((_, i) => (
-                    <SkeletonFeedPost key={`search-skeleton-${i}`} index={i} dark={isStudio} />
-                  ))}
-                </Masonry>
-              ) : feedSearchResults.length > 0 ? (
-                <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
-                  {feedSearchResults.map((post) => (
-                    <FeedPostItem
-                      key={post.id}
-                      post={post}
-                      feedId={-1}
-                      downloaded={downloadedE621Ids.has(post.id)}
-                      busy={!!feedActionBusy[post.id]}
-                      onFavorite={ensureFavorite}
-                      onOpenUrl={openExternalUrl}
-                    />
-                  ))}
-                </Masonry>
-              ) : (
+              {/* Feed content */}
+              {feedSearchInput && !feedSearchLoading && feedSearchResults.length === 0 ? (
                 <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>
                   <Search className="w-12 h-12 mx-auto mb-3 opacity-30" />
                   <p>No results found</p>
                 </div>
-              )
-            ) : selectedFeedId && feeds.find(f => f.id === selectedFeedId) ? (
-              (() => {
-                const feed = feeds.find(f => f.id === selectedFeedId)!;
-                return feedPosts[feed.id] && feedPosts[feed.id].length > 0 ? (
-                  <>
-                    <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
-                      {feedPosts[feed.id].map((post) => (
-                        <FeedPostItem
-                          key={post.id}
-                          post={post}
-                          feedId={feed.id}
-                          downloaded={downloadedE621Ids.has(post.id)}
-                          busy={!!feedActionBusy[post.id]}
-                          onFavorite={ensureFavorite}
-                          onOpenUrl={openExternalUrl}
-                        />
-                      ))}
-                    </Masonry>
-                    <InfiniteSentinel
-                      disabled={!e621CredInfo.username || !e621CredInfo.has_api_key || !!loadingFeeds[feed.id] || !!feedPaging[feed.id]?.done}
-                      onVisible={() => fetchFeedPosts(feed.id, feed.query)}
-                    />
-                    {feedPaging[feed.id]?.done && <div className={`text-center text-sm py-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>End of results</div>}
-                  </>
-                ) : loadingFeeds[feed.id] ? (
-                  <Masonry breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+              ) : feedSearchInput || feedSearchLoading ? (
+                feedSearchLoading ? (
+                  <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                     {Array.from({ length: gridColumns * 2 }).map((_, i) => (
-                      <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} dark={isStudio} />
+                      <SkeletonFeedPost key={`search-skeleton-${i}`} index={i} dark={isStudio} />
                     ))}
                   </Masonry>
                 ) : (
-                  <div className={`text-center py-20 italic ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>"Nobody here but us dergs"</div>
-                );
-              })()
-            ) : (
-              <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>
-                {feeds.length > 0 ? (
-                  <><p className="text-xl mb-2">Select a feed or search above</p></>
-                ) : (
-                  <>
-                    <Rss className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                    <p className="text-xl">No feeds yet</p>
-                    <p className="text-sm mt-2">Click the + button above to create one</p>
-                  </>
-                )}
-              </div>
-            )}
+                  <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                    {feedSearchResults.map((post) => (
+                      <FeedPostItem
+                        key={post.id}
+                        post={post}
+                        feedId={-1}
+                        downloaded={downloadedE621Ids.has(post.id)}
+                        busy={!!feedActionBusy[post.id]}
+                        onFavorite={ensureFavorite}
+                        onSelect={setSelectedFeedPost}
+                      />
+                    ))}
+                  </Masonry>
+                )
+              ) : selectedFeedId && feeds.find(f => f.id === selectedFeedId) ? (
+                (() => {
+                  const feed = feeds.find(f => f.id === selectedFeedId)!;
+                  return feedPosts[feed.id] && feedPosts[feed.id].length > 0 ? (
+                    <>
+                      <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                        {feedPosts[feed.id].map((post) => (
+                          <FeedPostItem
+                            key={post.id}
+                            post={post}
+                            feedId={feed.id}
+                            downloaded={downloadedE621Ids.has(post.id)}
+                            busy={!!feedActionBusy[post.id]}
+                            onFavorite={ensureFavorite}
+                            onSelect={setSelectedFeedPost}
+                          />
+                        ))}
+                      </Masonry>
+                      <InfiniteSentinel
+                        disabled={!e621CredInfo.username || !e621CredInfo.has_api_key || !!loadingFeeds[feed.id] || !!feedPaging[feed.id]?.done}
+                        onVisible={() => fetchFeedPosts(feed.id, feed.query)}
+                      />
+                      {feedPaging[feed.id]?.done && <div className={`text-center text-sm py-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>End of results</div>}
+                    </>
+                  ) : loadingFeeds[feed.id] ? (
+                    <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                      {Array.from({ length: gridColumns * 2 }).map((_, i) => (
+                        <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} dark={isStudio} />
+                      ))}
+                    </Masonry>
+                  ) : (
+                    <div className={`text-center py-20 italic ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>"Nobody here but us dergs"</div>
+                  );
+                })()
+              ) : (
+                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>
+                  {feeds.length > 0 ? (
+                    <p className="text-xl mb-2">Select a feed or search above</p>
+                  ) : (
+                    <>
+                      <Rss className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                      <p className="text-xl">No feeds yet</p>
+                      <p className="text-sm mt-2">Click the + button above to create one</p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* Detail pane */}
+          {selectedFeedPost && (
+            <>
+              <ResizeHandle onDrag={handleFeedDetailResize} />
+              <div style={{ width: feedDetailWidth }} className={`flex-shrink-0 overflow-y-auto ${isStudio ? 'bg-[#161621] border-l border-[#1d1b2d]' : 'bg-gray-800 border-l border-gray-700'}`}>
+                <div className="p-4">
+                  {/* Close button */}
+                  <button
+                    onClick={() => setSelectedFeedPost(null)}
+                    className={`mb-3 p-1.5 rounded-lg transition-colors ${isStudio ? 'hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white' : 'hover:bg-gray-700 text-gray-400 hover:text-white'}`}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+
+                  {/* Image/Video */}
+                  <div className={`rounded-lg overflow-hidden mb-4 ${isStudio ? 'bg-[#0a0a12]' : 'bg-black'}`}>
+                    {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
+                      <video
+                        key={selectedFeedPost.id}
+                        src={selectedFeedPost.file.url || selectedFeedPost.sample.url || ''}
+                        controls
+                        autoPlay
+                        loop
+                        className="w-full h-auto"
+                      />
+                    ) : (
+                      <img
+                        src={selectedFeedPost.sample.url || selectedFeedPost.file.url || selectedFeedPost.preview.url || ''}
+                        alt=""
+                        className="w-full h-auto"
+                        referrerPolicy="no-referrer"
+                      />
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className={`mb-4 pb-3 border-b ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider bg-blue-600">E6</span>
+                      <span className="text-sm font-medium truncate text-white">
+                        {(() => {
+                          const artists = selectedFeedPost.tags.artist.filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
+                          return artists.length > 0 ? artists.join(", ") : "Unknown";
+                        })()}
+                      </span>
+                    </div>
+                    <div className={`flex gap-3 text-xs ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
+                      <span>⭐ {selectedFeedPost.fav_count}</span>
+                      <span>Score: {selectedFeedPost.score.total}</span>
+                      <span className={`font-bold uppercase ${selectedFeedPost.rating === 'e' ? 'text-red-400' : selectedFeedPost.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
+                        {selectedFeedPost.rating === 'e' ? 'Explicit' : selectedFeedPost.rating === 'q' ? 'Questionable' : 'Safe'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex gap-2 mb-4">
+                    <button
+                      onClick={() => ensureFavorite(selectedFeedId ?? -1, selectedFeedPost)}
+                      disabled={!!feedActionBusy[selectedFeedPost.id]}
+                      className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                        selectedFeedPost.is_favorited
+                          ? 'bg-yellow-500 text-yellow-900'
+                          : (isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80 text-white' : 'bg-purple-600 hover:bg-purple-700 text-white')
+                      } ${feedActionBusy[selectedFeedPost.id] ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    >
+                      {feedActionBusy[selectedFeedPost.id] ? <Loader2 className="w-4 h-4 animate-spin" /> : <Star className={`w-4 h-4 ${selectedFeedPost.is_favorited ? 'fill-current' : ''}`} />}
+                      {selectedFeedPost.is_favorited ? 'Favorited' : 'Favorite & Download'}
+                    </button>
+                    <button
+                      onClick={() => openExternalUrl(`https://e621.net/posts/${selectedFeedPost.id}`)}
+                      className={`px-3 py-2 rounded-xl text-sm ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa]' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+                    >
+                      Open
+                    </button>
+                  </div>
+
+                  {downloadedE621Ids.has(selectedFeedPost.id) && (
+                    <div className={`flex items-center gap-2 text-xs mb-4 px-3 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] text-[#9e98aa]' : 'bg-gray-700 text-gray-400'}`}>
+                      <Database className="w-3.5 h-3.5" />
+                      Already in library
+                    </div>
+                  )}
+
+                  {/* Sources */}
+                  {selectedFeedPost.sources && selectedFeedPost.sources.length > 0 && (
+                    <div className={`mb-4 pb-3 border-b ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
+                      <h4 className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>Sources</h4>
+                      <div className="space-y-1">
+                        {selectedFeedPost.sources.map((source, i) => (
+                          <button key={i} onClick={() => openExternalUrl(source)} className={`block text-xs truncate ${isStudio ? 'text-[#967abc] hover:text-[#967abc]/80' : 'text-purple-400 hover:text-purple-300'}`} title={source}>
+                            {getSocialMediaName(source)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tags */}
+                  <h4 className={`text-xs font-semibold uppercase tracking-wider mb-3 flex items-center gap-2 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}><Tag className="w-3.5 h-3.5" /> Tags</h4>
+                  <TagSection title="Artists" tags={selectedFeedPost.tags.artist} color="text-yellow-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                  <TagSection title="Copyrights" tags={selectedFeedPost.tags.copyright} color="text-pink-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                  <TagSection title="Characters" tags={selectedFeedPost.tags.character} color="text-green-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                  <TagSection title="Species" tags={selectedFeedPost.tags.species} color="text-red-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                  <TagSection title="General" tags={selectedFeedPost.tags.general} color="text-blue-300" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                  <TagSection title="Meta" tags={selectedFeedPost.tags.meta} color="text-gray-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                  <TagSection title="Lore" tags={selectedFeedPost.tags.lore} color="text-purple-300" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Add/Edit Feed Modal */}
           {showAddFeedModal && (
@@ -2623,6 +2762,7 @@ if (loadingFeedsRef.current[feedId]) return;
         autoscrollSpeed={autoscrollSpeed}
         setAutoscrollSpeed={setAutoscrollSpeed}
         hidden={shouldHideAutoscroll}
+        isStudio={isStudio}
       />
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
