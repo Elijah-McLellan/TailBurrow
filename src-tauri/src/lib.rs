@@ -87,6 +87,7 @@ pub fn run() {
       commands::get_pool_posts,
       commands::save_pools_cache,
       commands::load_pools_cache,
+      commands::clear_pools_cache,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

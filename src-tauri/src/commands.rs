@@ -1708,6 +1708,18 @@ pub fn load_pools_cache(app: AppHandle) -> Result<Vec<PoolInfo>, String> {
 }
 
 #[tauri::command]
+pub fn clear_pools_cache(app: AppHandle) -> Result<(), String> {
+    let root = get_root(&app)?;
+    let cache_file = root.join(".cache").join("pools_cache.json");
+    
+    if cache_file.exists() {
+        std::fs::remove_file(cache_file).map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+#[tauri::command]
 pub fn has_app_lock() -> Result<bool, String> {
     Ok(crate::secrets::get_secret("app_lock_hash")?.is_some())
 }

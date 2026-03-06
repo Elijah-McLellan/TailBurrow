@@ -1295,8 +1295,12 @@ if (loadingFeedsRef.current[feedId]) return;
       setPoolScanProgress({ current: 0, total: localIds.length });
       
       // Keep track of pools we already know so we don't re-fetch them
+      // Read directly from the latest state to avoid stale closure issues
       const knownPools = new Set<number>();
-      pools.forEach(p => knownPools.add(p.pool_id));
+      setPools(currentPools => {
+        currentPools.forEach(p => knownPools.add(p.pool_id));
+        return currentPools; // return unchanged
+      });
       
             // 2. Scan them in batches of 100
       for (let i = 0; i < localIds.length; i += 100) {
@@ -1334,7 +1338,7 @@ if (loadingFeedsRef.current[feedId]) return;
       setPoolsLoading(false);
       setPoolScanProgress(null);
     }
-  }, [e621CredInfo, toast, pools]);
+  }, [e621CredInfo, toast]);
 
   const openPool = useCallback(async (pool: PoolInfo) => {
     setSelectedPool(pool);
@@ -1355,6 +1359,21 @@ if (loadingFeedsRef.current[feedId]) return;
     setComicAutoscroll(false);
   }, []);
 
+    const handleClearPoolsCache = useCallback(async () => {
+    const ok = await confirmDialog(
+      "Are you sure you want to clear the comics cache? You will need to rescan to see them again.",
+      { title: "Clear Cache", okLabel: "Clear", cancelLabel: "Cancel" }
+    );
+    if (!ok) return;
+
+    try {
+      await invoke("clear_pools_cache");
+      setPools([]);
+      toast("Comics cache cleared.", "success");
+    } catch (e) {
+      toast("Failed to clear cache: " + String(e), "error");
+    }
+  }, [toast]);
 
   const handleUnlock = useCallback(async () => {
     setPinError('');
@@ -2816,53 +2835,70 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
             </div>
           ) : (
             // Pool grid view
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className={`flex-1 overflow-y-auto p-4 ${!isStudio ? 'max-w-7xl mx-auto w-full' : ''}`}>
               <div className="flex items-center justify-between gap-4 mb-4">
                 <h2 className="text-xl font-bold flex-shrink-0">Comics & Pools</h2>
-                <button
-                  onClick={loadPools}
-                  disabled={poolsLoading}
-                  className={`p-2 flex-shrink-0 rounded-xl transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa]' : 'bg-gray-700 hover:bg-gray-600 text-gray-400'}`}
-                  title="Scan Favorites for Pools"
-                >
-                  {poolsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8V3"/><path d="M21 3v5h-5"/></svg>}
-                </button>
+                
+                <div className="flex gap-2 flex-shrink-0">
+                  {pools.length > 0 && !poolsLoading && (
+                    <button
+                      onClick={handleClearPoolsCache}
+                      className={`p-2 rounded-xl transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-red-900/50 text-[#9e98aa] hover:text-red-400' : 'bg-gray-700 hover:bg-red-900/50 text-gray-400 hover:text-red-400'}`}
+                      title="Clear Cache"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  )}
+                  
+                  <button
+                    onClick={loadPools}
+                    disabled={poolsLoading}
+                    className={`relative overflow-hidden flex items-center justify-center min-w-[40px] px-3 py-2 rounded-xl transition-colors ${
+                      isStudio 
+                        ? (poolsLoading ? 'bg-[#1c1b26] border border-[#1d1b2d] text-[#9e98aa]' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa]') 
+                        : (poolsLoading ? 'bg-gray-800 border border-gray-700 text-gray-400' : 'bg-gray-700 hover:bg-gray-600 text-gray-400')
+                    }`}
+                    title="Scan Favorites for Pools"
+                  >
+                    {poolsLoading && poolScanProgress ? (
+                      <>
+                        <div 
+                          className={`absolute left-0 top-0 bottom-0 opacity-20 transition-all duration-300 ${isStudio ? 'bg-[#967abc]' : 'bg-purple-500'}`}
+                          style={{ width: `${(poolScanProgress.current / poolScanProgress.total) * 100}%` }}
+                        />
+                        <span className="relative z-10 text-xs font-mono font-medium flex items-center gap-2">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          {poolScanProgress.current} / {poolScanProgress.total}
+                        </span>
+                      </>
+                    ) : poolsLoading ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8V3"/><path d="M21 3v5h-5"/></svg>
+                    )}
+                  </button>
+                </div>
               </div>
 
-              {poolsLoading ? (
-                <div className="flex flex-col items-center justify-center py-20">
-                  <Loader2 className={`w-10 h-10 animate-spin mb-4 ${isStudio ? 'text-[#967abc]' : 'text-purple-500'}`} />
-                  <p className={`${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
-                    {poolScanProgress 
-                      ? `Scanning posts... ${poolScanProgress.current} / ${poolScanProgress.total}`
-                      : 'Scanning your favorites for pools...'}
-                  </p>
-                  {poolScanProgress && (
-                    <div className={`w-64 h-2 mt-4 rounded-full overflow-hidden ${isStudio ? 'bg-[#1d1b2d]' : 'bg-gray-700'}`}>
-                      <div 
-                        className={`h-full transition-all duration-300 ${isStudio ? 'bg-[#967abc]' : 'bg-purple-500'}`}
-                        style={{ width: `${poolScanProgress.total > 0 ? (poolScanProgress.current / poolScanProgress.total) * 100 : 0}%` }}
-                      />
-                    </div>
-                  )}
-                  {pools.length > 0 && (
-                    <p className={`text-sm mt-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
-                      Found {pools.length} pools so far
-                    </p>
-                  )}
-                </div>
-              ) : pools.length === 0 ? (
+              {/* Grid or Empty State */}
+              {filteredPools.length === 0 && !poolsLoading ? (
                 <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
                   <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-30" />
                   <p className="text-xl mb-2">Comics & Pools</p>
                   <p className="text-sm mb-6">Scan your e621 favorites to find pools (comics, series, etc.)</p>
                   <button
                     onClick={loadPools}
-                    className={`px-6 py-3 rounded-xl font-medium ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
+                    className={`px-6 py-3 rounded-xl text-white font-medium flex items-center gap-2 mx-auto ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
                   >
-                    Scan for Pools
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8V3"/><path d="M21 3v5h-5"/></svg>
+                    Start Scan
                   </button>
                 </div>
+              ) : filteredPools.length === 0 && poolsLoading ? (
+                 <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                   <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-10 animate-pulse" />
+                   <p>Looking for comics...</p>
+                 </div>
               ) : (
                 <Masonry
                   breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
@@ -2888,7 +2924,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                             alt={pool.name}
                             className="w-full h-auto object-cover"
                             loading="lazy"
-                            referrerPolicy="no-referrer"
                           />
                         )
                       ) : (
