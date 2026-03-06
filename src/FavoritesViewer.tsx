@@ -3,8 +3,8 @@ import { createPortal } from "react-dom";
 import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
-  Database, Loader2, LayoutGrid, Volume2, VolumeX, Clock, 
-  Pencil, Info, Undo, ChevronsDown
+  Database, Loader2, LayoutGrid, Volume2, VolumeX, Clock, Pencil,
+  Info, Undo, ChevronsDown, BookOpen, ArrowLeft, ZoomIn, ZoomOut
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
@@ -123,6 +123,22 @@ type FASyncStatus = {
   imported: number; upgraded: number; errors: number; current_message: string;
 };
 type FACreds = { a: string; b: string };
+
+type PoolInfo = {
+  pool_id: number;
+  name: string;
+  post_count: number;
+  cover_url: string;
+  cover_ext: string;
+};
+
+type PoolPost = {
+  item_id: number;
+  source_id: string;
+  file_abs: string;
+  ext: string;
+  position: number;
+};
 
 type E621Post = {
   id: number;
@@ -776,9 +792,32 @@ export default function FavoritesViewer() {
   const [safeMode, setSafeMode] = useState(false);
   const [safePinInput, setSafePinInput] = useState('');
 
+  // Comics
+  const [pools, setPools] = useState<PoolInfo[]>([]);
+  const [poolsLoading, setPoolsLoading] = useState(false);
+  const [comicSearchInput, setComicSearchInput] = useState('');
+  const [selectedPool, setSelectedPool] = useState<PoolInfo | null>(null);
+  const [poolPosts, setPoolPosts] = useState<PoolPost[]>([]);
+  const [poolPostsLoading, setPoolPostsLoading] = useState(false);
+  const [comicScale, setComicScale] = useState(100);
+  const [comicAutoscroll, setComicAutoscroll] = useState(false);
+  const [comicAutoscrollSpeed, setComicAutoscrollSpeed] = useState(1);
+  const [poolScanProgress, setPoolScanProgress] = useState<{ current: number; total: number } | null>(null);
+  const comicContainerRef = useRef<HTMLDivElement>(null);
+
+
   // --- DERIVED STATE (stable) ---
   const isStudio = viewerLayout === 'studio';
   const currentItem = items[currentIndex] || null;
+  const filteredPools = useMemo(() => {
+    if (!comicSearchInput.trim()) return pools;
+    const lower = comicSearchInput.toLowerCase().trim();
+    if (lower.startsWith('pool:')) {
+      const idStr = lower.replace('pool:', '').trim();
+      return pools.filter(p => p.pool_id.toString() === idStr);
+    }
+    return pools.filter(p => p.name.toLowerCase().includes(lower) || p.pool_id.toString() === lower);
+  }, [pools, comicSearchInput]);
   const itemCount = items.length;
   const ext = (currentItem?.ext || "").toLowerCase();
   const isVideo = ext === "mp4" || ext === "webm";
@@ -1235,6 +1274,88 @@ if (loadingFeedsRef.current[feedId]) return;
     setTrashCount(0);
   }, []);
 
+  const loadPools = useCallback(async () => {
+    if (!e621CredInfo.username || !e621CredInfo.has_api_key) {
+      toast("Set e621 credentials in Settings first.", "error");
+      return;
+    }
+    setPoolsLoading(true);
+    setPoolScanProgress({ current: 0, total: 0 });
+    
+    try {
+      // 1. Get all local IDs instantly
+      const localIds = await invoke<number[]>("get_all_e621_ids");
+      
+      if (localIds.length === 0) {
+        setPoolsLoading(false);
+        setPoolScanProgress(null);
+        return;
+      }
+      
+      setPoolScanProgress({ current: 0, total: localIds.length });
+      
+      // Keep track of pools we already know so we don't re-fetch them
+      const knownPools = new Set<number>();
+      pools.forEach(p => knownPools.add(p.pool_id));
+      
+            // 2. Scan them in batches of 100
+      for (let i = 0; i < localIds.length; i += 100) {
+        const chunk = localIds.slice(i, i + 100);
+        
+        try {
+          const foundPoolIds = await invoke<number[]>("check_posts_for_pools", { ids: chunk });
+          
+          for (const pid of foundPoolIds) {
+            if (!knownPools.has(pid)) {
+              knownPools.add(pid);
+              // Fetch pool cover immediately so it pops into the grid real-time
+              const poolInfo = await invoke<PoolInfo | null>("fetch_pool_info", { poolId: pid });
+              if (poolInfo) {
+                setPools(prev => {
+                  const next = [...prev, poolInfo];
+                  next.sort((a, b) => a.name.localeCompare(b.name));
+                  // Fire-and-forget save to cache so it persists instantly
+                  invoke("save_pools_cache", { pools: next }).catch(console.error);
+                  return next;
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("Chunk scan error", err);
+        }
+        
+        // Update progress bar
+        setPoolScanProgress({ current: Math.min(i + 100, localIds.length), total: localIds.length });
+      }
+    } catch (e) {
+      toast("Failed to scan pools: " + String(e), "error");
+    } finally {
+      setPoolsLoading(false);
+      setPoolScanProgress(null);
+    }
+  }, [e621CredInfo, toast, pools]);
+
+  const openPool = useCallback(async (pool: PoolInfo) => {
+    setSelectedPool(pool);
+    setPoolPostsLoading(true);
+    try {
+      const posts = await invoke<PoolPost[]>("get_pool_posts", { poolId: pool.pool_id });
+      setPoolPosts(posts);
+    } catch (e) {
+      toast("Failed to load pool posts: " + String(e), "error");
+    } finally {
+      setPoolPostsLoading(false);
+    }
+  }, [toast]);
+
+  const closePool = useCallback(() => {
+    setSelectedPool(null);
+    setPoolPosts([]);
+    setComicAutoscroll(false);
+  }, []);
+
+
   const handleUnlock = useCallback(async () => {
     setPinError('');
     try {
@@ -1400,6 +1521,15 @@ if (loadingFeedsRef.current[feedId]) return;
         loadFeeds();
         await refreshE621CredInfo();
         await refreshFaCreds();
+        // Load cached pools on startup
+        try {
+          const cachedPools = await invoke<PoolInfo[]>("load_pools_cache");
+          if (cachedPools && cachedPools.length > 0 && !cancelled) {
+            setPools(cachedPools);
+          }
+        } catch (e) {
+          console.warn("No pools cache found or failed to load");
+        }
       } catch (error) {
         if (!cancelled) console.error("Failed to initialize:", error);
       } finally {
@@ -1655,6 +1785,18 @@ if (loadingFeedsRef.current[feedId]) return;
     };
   }, [autoscroll, autoscrollSpeed, isStudio, activeTab]);
 
+  // Comic autoscroll
+  useEffect(() => {
+    if (!comicAutoscroll || !comicContainerRef.current) return;
+    let frameId: number;
+    const scroll = () => {
+      comicContainerRef.current?.scrollBy(0, comicAutoscrollSpeed);
+      frameId = requestAnimationFrame(scroll);
+    };
+    frameId = requestAnimationFrame(scroll);
+    return () => cancelAnimationFrame(frameId);
+  }, [comicAutoscroll, comicAutoscrollSpeed]);
+
   // --- RENDER HELPERS ---
   const handleGridItemSelect = useCallback((index: number) => {
     setCurrentIndex(index);
@@ -1689,7 +1831,7 @@ if (loadingFeedsRef.current[feedId]) return;
     localStorage.setItem('feed_detail_width', String(Math.round(newWidth)));
   }, []);
 
-const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
+const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || activeTab === 'comics';
   // --- RENDER ---
   return (
     <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col bg-gray-900 text-white"}>
@@ -1744,20 +1886,27 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
             <div className="flex gap-1 flex-shrink-0">
               <button onClick={() => setActiveTab('viewer')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'viewer' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><LayoutGrid className="w-3.5 h-3.5" />Viewer</button>
               <button onClick={() => setActiveTab('feeds')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'feeds' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><Rss className="w-3.5 h-3.5" />e621</button>
+              <button onClick={() => setActiveTab('comics')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'comics' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><BookOpen className="w-3.5 h-3.5" />Comics</button>
             </div>
 
             <div className="flex flex-1 items-center gap-2 min-w-0">
-              {activeTab === 'viewer' ? (
+              {activeTab === 'viewer' || activeTab === 'comics' ? (
                 <>
                   <div className="flex-1 min-w-[150px] relative">
                     <Search className={`absolute left-3 top-2 w-3.5 h-3.5 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`} />
                     <input
                       type="text"
-                      placeholder="Search tags..."
-                      value={searchTags}
-                      onChange={(e) => setSearchTags(e.target.value)}
+                      placeholder={activeTab === 'comics' ? "Search comics by name or pool:12345" : "Search tags..."}
+                      value={activeTab === 'comics' ? comicSearchInput : searchTags}
+                      onChange={(e) => {
+                        if (activeTab === 'comics') {
+                          setComicSearchInput(e.target.value);
+                        } else {
+                          setSearchTags(e.target.value);
+                        }
+                      }}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
+                        if (e.key === 'Enter' && activeTab === 'viewer') {
                           setItems([]);
                           setHasMoreItems(true);
                           loadData(false);
@@ -1766,18 +1915,22 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
                       className={`w-full pl-9 pr-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}
                     />
                   </div>
-                  <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
-                    <option value="default">Default</option>
-                    <option value="random">Random</option>
-                    <option value="score">Score</option>
-                    <option value="newest">Newest</option>
-                    <option value="oldest">Oldest</option>
-                  </select>
-                  <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
-                    <option value="all">All</option>
-                    <option value="e621">e621</option>
-                    <option value="furaffinity">FurAffinity</option>
-                  </select>
+                  {activeTab === 'viewer' && (
+                    <>
+                      <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
+                        <option value="default">Default</option>
+                        <option value="random">Random</option>
+                        <option value="score">Score</option>
+                        <option value="newest">Newest</option>
+                        <option value="oldest">Oldest</option>
+                      </select>
+                      <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
+                        <option value="all">All</option>
+                        <option value="e621">e621</option>
+                        <option value="furaffinity">FurAffinity</option>
+                      </select>
+                    </>
+                  )}
                 </>
               ) : (
                 <div className="flex-1 min-w-[150px] relative">
@@ -2566,7 +2719,195 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
           )}
         </div>
       )}
+      {/* Comics Tab */}
+      {activeTab === 'comics' && (
+        <div className={`flex-1 overflow-hidden flex flex-col ${isStudio ? 'bg-[#0f0f17]' : ''}`}>
+                    {selectedPool ? (
+            // Comic reader view
+            <div className="flex-1 relative overflow-hidden flex flex-col">
+              
+              {/* Floating Header */}
+              <div className="absolute top-0 left-0 right-0 z-20 p-4 pointer-events-none flex justify-between items-start">
+                {/* Back & Info Card */}
+                <div className={`pointer-events-auto flex items-center gap-3 p-2.5 pr-5 rounded-2xl backdrop-blur-md border shadow-xl ${isStudio ? 'bg-[#161621]/80 border-[#1d1b2d]' : 'bg-gray-900/80 border-gray-700'}`}>
+                  <button onClick={closePool} className={`p-2 rounded-xl transition-colors ${isStudio ? 'hover:bg-[#1d1b2d] text-white' : 'hover:bg-gray-700 text-white'}`}>
+                    <ArrowLeft className="w-5 h-5" />
+                  </button>
+                  <div>
+                    <h2 className="font-bold text-sm tracking-wide text-white drop-shadow-md">{selectedPool.name}</h2>
+                    <p className={`text-xs font-medium drop-shadow-md ${isStudio ? 'text-[#9e98aa]' : 'text-gray-300'}`}>
+                      Pool #{selectedPool.pool_id} • {poolPosts.filter(p => p.item_id !== 0).length} local • {poolPosts.length} total
+                    </p>
+                  </div>
+                </div>
 
+                {/* Controls Card */}
+                <div className={`pointer-events-auto flex items-center gap-2 p-2 rounded-2xl backdrop-blur-md border shadow-xl ${isStudio ? 'bg-[#161621]/80 border-[#1d1b2d]' : 'bg-gray-900/80 border-gray-700'}`}>
+                  <button onClick={() => setComicScale(s => Math.max(25, s - 25))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
+                    <ZoomOut className="w-4 h-4" />
+                  </button>
+                  <span className="text-sm font-medium w-12 text-center text-white drop-shadow-md">{comicScale}%</span>
+                  <button onClick={() => setComicScale(s => Math.min(100, s + 25))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
+                    <ZoomIn className="w-4 h-4" />
+                  </button>
+                  <div className="w-px h-6 bg-gray-500/50 mx-1" />
+                  <button onClick={() => setComicAutoscroll(!comicAutoscroll)} className={`p-2 rounded-xl flex items-center gap-1.5 transition-colors text-white ${comicAutoscroll ? (isStudio ? 'bg-[#967abc]' : 'bg-purple-600') : (isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700')}`}>
+                    {comicAutoscroll ? <Pause className="w-4 h-4" /> : <ChevronsDown className="w-4 h-4" />}
+                  </button>
+                  {comicAutoscroll && (
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="5"
+                      step="0.5"
+                      value={comicAutoscrollSpeed}
+                      onChange={(e) => setComicAutoscrollSpeed(Number(e.target.value))}
+                      className={`w-20 cursor-pointer mr-2 ${isStudio ? 'accent-[#967abc]' : 'accent-purple-500'}`}
+                    />
+                  )}
+                </div>
+              </div>
+
+              {/* Comic pages */}
+              <div ref={comicContainerRef} className="flex-1 overflow-y-auto">
+                {poolPostsLoading ? (
+                  <div className="flex items-center justify-center py-20">
+                    <Loader2 className={`w-8 h-8 animate-spin ${isStudio ? 'text-[#967abc]' : 'text-purple-500'}`} />
+                  </div>
+                ) : poolPosts.length === 0 ? (
+                  <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                    <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                    <p>No pages from this pool in your library</p>
+                    <p className="text-sm mt-2">Favorite more posts from this pool on e621</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center py-4" style={{ gap: '2px' }}>
+                    {poolPosts.map((post) => {
+                      const isVideo = ['mp4', 'webm'].includes(post.ext.toLowerCase());
+                      return (
+                        <div key={`${post.source_id}-${post.position}`} style={{ width: `${comicScale}%`, maxWidth: '100%' }} className="relative">
+                          {post.item_id === 0 && (
+                            <div className="absolute top-2 right-2 z-10 bg-black/70 text-xs px-2 py-1 rounded-full text-gray-300 pointer-events-none">
+                              Remote
+                            </div>
+                          )}
+                          {isVideo ? (
+                            <video
+                              src={post.item_id === 0 ? post.file_abs : convertFileSrc(post.file_abs)}
+                              controls
+                              className="w-full h-auto"
+                              style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+                            />
+                          ) : (
+                            <img
+                              src={post.item_id === 0 ? post.file_abs : convertFileSrc(post.file_abs)}
+                              alt={`Page ${post.position + 1}`}
+                              className="w-full h-auto"
+                              loading="lazy"
+                              style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            // Pool grid view
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="flex items-center justify-between gap-4 mb-4">
+                <h2 className="text-xl font-bold flex-shrink-0">Comics & Pools</h2>
+                <button
+                  onClick={loadPools}
+                  disabled={poolsLoading}
+                  className={`p-2 flex-shrink-0 rounded-xl transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa]' : 'bg-gray-700 hover:bg-gray-600 text-gray-400'}`}
+                  title="Scan Favorites for Pools"
+                >
+                  {poolsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8V3"/><path d="M21 3v5h-5"/></svg>}
+                </button>
+              </div>
+
+              {poolsLoading ? (
+                <div className="flex flex-col items-center justify-center py-20">
+                  <Loader2 className={`w-10 h-10 animate-spin mb-4 ${isStudio ? 'text-[#967abc]' : 'text-purple-500'}`} />
+                  <p className={`${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
+                    {poolScanProgress 
+                      ? `Scanning posts... ${poolScanProgress.current} / ${poolScanProgress.total}`
+                      : 'Scanning your favorites for pools...'}
+                  </p>
+                  {poolScanProgress && (
+                    <div className={`w-64 h-2 mt-4 rounded-full overflow-hidden ${isStudio ? 'bg-[#1d1b2d]' : 'bg-gray-700'}`}>
+                      <div 
+                        className={`h-full transition-all duration-300 ${isStudio ? 'bg-[#967abc]' : 'bg-purple-500'}`}
+                        style={{ width: `${poolScanProgress.total > 0 ? (poolScanProgress.current / poolScanProgress.total) * 100 : 0}%` }}
+                      />
+                    </div>
+                  )}
+                  {pools.length > 0 && (
+                    <p className={`text-sm mt-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                      Found {pools.length} pools so far
+                    </p>
+                  )}
+                </div>
+              ) : pools.length === 0 ? (
+                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                  <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                  <p className="text-xl mb-2">Comics & Pools</p>
+                  <p className="text-sm mb-6">Scan your e621 favorites to find pools (comics, series, etc.)</p>
+                  <button
+                    onClick={loadPools}
+                    className={`px-6 py-3 rounded-xl font-medium ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
+                  >
+                    Scan for Pools
+                  </button>
+                </div>
+              ) : (
+                <Masonry
+                  breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
+                  className="flex w-auto gap-3"
+                  columnClassName="flex flex-col gap-3"
+                >
+                  {filteredPools.map((pool) => (
+                    <div
+                      key={pool.pool_id}
+                      onClick={() => openPool(pool)}
+                      className={`group cursor-pointer rounded-lg overflow-hidden border transition-all ${isStudio ? 'bg-[#161621] border-[#1d1b2d] hover:border-[#967abc]' : 'bg-gray-800 border-gray-700 hover:border-purple-500'}`}
+                    >
+                      {pool.cover_url ? (
+                        ['mp4', 'webm'].includes(pool.cover_ext.toLowerCase()) ? (
+                          <video
+                            src={pool.cover_url.startsWith('/') || pool.cover_url.startsWith('C:') ? convertFileSrc(pool.cover_url) : pool.cover_url}
+                            className="w-full h-auto object-cover"
+                            muted
+                          />
+                        ) : (
+                          <img
+                            src={pool.cover_url.startsWith('/') || pool.cover_url.startsWith('C:') ? convertFileSrc(pool.cover_url) : pool.cover_url}
+                            alt={pool.name}
+                            className="w-full h-auto object-cover"
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                          />
+                        )
+                      ) : (
+                        <div className={`w-full aspect-[3/4] flex items-center justify-center ${isStudio ? 'bg-[#1d1b2d]' : 'bg-gray-700'}`}>
+                          <BookOpen className="w-12 h-12 opacity-30" />
+                        </div>
+                      )}
+                      <div className={`p-3 ${isStudio ? 'bg-[#161621]' : 'bg-gray-800'}`}>
+                        <h3 className="font-medium text-sm truncate">{pool.name}</h3>
+                        <p className={`text-xs mt-1 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>{pool.post_count} pages</p>
+                      </div>
+                    </div>
+                  ))}
+                </Masonry>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

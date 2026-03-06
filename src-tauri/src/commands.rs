@@ -130,6 +130,24 @@ pub struct UnavailableDto {
   pub sources: Vec<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PoolInfo {
+    pub pool_id: i64,
+    pub name: String,
+    pub post_count: i32,
+    pub cover_url: String,
+    pub cover_ext: String,
+}
+
+#[derive(Serialize)]
+pub struct PoolPost {
+    pub item_id: i64,
+    pub source_id: String,
+    pub file_abs: String,
+    pub ext: String,
+    pub position: i32,
+}
+
 #[tauri::command]
 pub fn e621_unavailable_list(app: AppHandle, limit: u32) -> Result<Vec<UnavailableDto>, String> {
   with_db(&app, |conn| {
@@ -1399,6 +1417,294 @@ pub fn trash_item(app: tauri::AppHandle, item_id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn auto_clean_trash(app: tauri::AppHandle) {
     let _ = prune_expired_trash(&app);
+}
+
+#[tauri::command]
+pub fn get_all_e621_ids(app: AppHandle) -> Result<Vec<i64>, String> {
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+    
+    let mut stmt = conn.prepare(
+        "SELECT source_id FROM items WHERE source = 'e621' AND trashed_at IS NULL"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([], |row| {
+        let id_str: String = row.get(0)?;
+        Ok(id_str.parse::<i64>().unwrap_or(0))
+    }).map_err(|e| e.to_string())?;
+
+    let mut ids = Vec::new();
+    for row in rows {
+        if let Ok(id) = row {
+            if id > 0 {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+#[tauri::command]
+pub async fn check_posts_for_pools(ids: Vec<i64>) -> Result<Vec<i64>, String> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let (username, api_key) = load_e621_creds()?;
+    let client = reqwest::Client::new();
+    let ids_param = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+    
+    let resp = client
+        .get("https://e621.net/posts.json")
+        .basic_auth(&username, Some(&api_key))
+        .header("User-Agent", "TailBurrow/0.2.4 (pools)")
+        .query(&[("tags", format!("id:{}", ids_param)), ("limit", "100".to_string())])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Ok(vec![]);
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let posts = json.get("posts").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    
+    let mut pool_ids = std::collections::HashSet::new();
+
+    for post in posts {
+        if let Some(pools) = post.get("pools").and_then(|p| p.as_array()) {
+            for pool_val in pools {
+                if let Some(pool_id) = pool_val.as_i64() {
+                    pool_ids.insert(pool_id);
+                }
+            }
+        }
+    }
+
+    // Rate limit 500ms
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    Ok(pool_ids.into_iter().collect())
+}
+
+#[tauri::command]
+pub async fn fetch_pool_info(app: AppHandle, pool_id: i64) -> Result<Option<PoolInfo>, String> {
+    let (username, api_key) = load_e621_creds()?;
+    let root = get_root(&app)?;
+    
+    let client = reqwest::Client::new();
+    
+    let resp = client
+        .get(format!("https://e621.net/pools/{}.json", pool_id))
+        .basic_auth(&username, Some(&api_key))
+        .header("User-Agent", "TailBurrow/0.2.4 (pools)")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let pool_json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    
+    let name = pool_json.get("name").and_then(|n| n.as_str()).unwrap_or("Unknown").replace("_", " ");
+    let post_ids = pool_json.get("post_ids").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    let post_count = post_ids.len() as i32;
+    
+    let first_post_id = post_ids.first().and_then(|p| p.as_i64()).unwrap_or(0);
+    
+    if first_post_id == 0 {
+        return Ok(None);
+    }
+
+    // Check if we have this post locally
+    let local_cover: Option<(String, String)> = {
+        if let Ok(conn) = db::open(&library::db_path(&root)) {
+            conn.query_row(
+                "SELECT file_rel, ext FROM items WHERE source = 'e621' AND source_id = ? AND trashed_at IS NULL",
+                params![first_post_id.to_string()],
+                |row| Ok((row.get(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
+            ).ok()
+        } else {
+            None
+        }
+    };
+
+    let (cover_url, cover_ext) = if let Some((file_rel, ext)) = local_cover {
+        (root.join(&file_rel).to_string_lossy().to_string(), ext)
+    } else {
+        // Fetch from e621
+        let post_resp = client
+            .get(format!("https://e621.net/posts/{}.json", first_post_id))
+            .basic_auth(&username, Some(&api_key))
+            .header("User-Agent", "TailBurrow/0.2.4 (pools)")
+            .send()
+            .await;
+
+        if let Ok(post_resp) = post_resp {
+            if let Ok(post_json) = post_resp.json::<serde_json::Value>().await {
+                let post = post_json.get("post").unwrap_or(&post_json);
+                let sample_url = post.get("sample").and_then(|s| s.get("url")).and_then(|u| u.as_str()).unwrap_or("");
+                let ext = post.get("file").and_then(|f| f.get("ext")).and_then(|e| e.as_str()).unwrap_or("jpg");
+                (sample_url.to_string(), ext.to_string())
+            } else {
+                (String::new(), String::new())
+            }
+        } else {
+            (String::new(), String::new())
+        }
+    };
+
+    // Rate limit
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    Ok(Some(PoolInfo {
+        pool_id,
+        name,
+        post_count,
+        cover_url,
+        cover_ext,
+    }))
+}
+
+#[tauri::command]
+pub async fn get_pool_posts(app: AppHandle, pool_id: i64) -> Result<Vec<PoolPost>, String> {
+    let (username, api_key) = load_e621_creds()?;
+    let root = get_root(&app)?;
+
+    let client = reqwest::Client::new();
+
+    // Fetch pool info from e621
+    let resp = client
+        .get(format!("https://e621.net/pools/{}.json", pool_id))
+        .basic_auth(&username, Some(&api_key))
+        .header("User-Agent", "TailBurrow/0.2.5 (pools)")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Failed to fetch pool: HTTP {}", resp.status()));
+    }
+
+    let pool_json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let post_ids = pool_json.get("post_ids").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+
+    let conn = db::open(&library::db_path(&root))?;
+    let mut posts: Vec<PoolPost> = vec![];
+
+    // Fetch missing posts in batches of 100 from e621
+    let mut missing_ids = vec![];
+    let mut local_map = std::collections::HashMap::new();
+
+    for post_id_val in &post_ids {
+        let post_id = post_id_val.as_i64().unwrap_or(0);
+        if post_id == 0 { continue; }
+
+        let local: Option<(i64, String, String)> = conn.query_row(
+            "SELECT item_id, file_rel, COALESCE(ext, '') FROM items WHERE source = 'e621' AND source_id = ? AND trashed_at IS NULL",
+            params![post_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        ).ok();
+
+        if let Some((item_id, file_rel, ext)) = local {
+            local_map.insert(post_id, (item_id, root.join(&file_rel).to_string_lossy().to_string(), ext));
+        } else {
+            missing_ids.push(post_id);
+        }
+    }
+
+    let mut remote_map = std::collections::HashMap::new();
+    
+    for chunk in missing_ids.chunks(100) {
+        let ids_param = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+        
+        let resp = client
+            .get("https://e621.net/posts.json")
+            .basic_auth(&username, Some(&api_key))
+            .header("User-Agent", "TailBurrow/0.2.5 (pools)")
+            .query(&[("tags", format!("id:{}", ids_param)), ("limit", "100".to_string())])
+            .send()
+            .await;
+
+        if let Ok(resp) = resp {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let remote_posts = json.get("posts").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+                    for rp in remote_posts {
+                        let id = rp.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+                        let url = rp.get("sample").and_then(|s| s.get("url"))
+                            .or_else(|| rp.get("file").and_then(|f| f.get("url")))
+                            .and_then(|u| u.as_str()).unwrap_or("").to_string();
+                        let ext = rp.get("file").and_then(|f| f.get("ext")).and_then(|e| e.as_str()).unwrap_or("jpg").to_string();
+                        
+                        if id > 0 && !url.is_empty() {
+                            remote_map.insert(id, (url, ext));
+                        }
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    // Assemble final list in correct pool order
+    for (position, post_id_val) in post_ids.iter().enumerate() {
+        let post_id = post_id_val.as_i64().unwrap_or(0);
+        if post_id == 0 { continue; }
+
+        if let Some((item_id, file_abs, ext)) = local_map.get(&post_id) {
+            posts.push(PoolPost {
+                item_id: *item_id,
+                source_id: post_id.to_string(),
+                file_abs: file_abs.clone(),
+                ext: ext.clone(),
+                position: position as i32,
+            });
+        } else if let Some((url, ext)) = remote_map.get(&post_id) {
+            posts.push(PoolPost {
+                item_id: 0, // 0 indicates it's not downloaded
+                source_id: post_id.to_string(),
+                file_abs: url.clone(), // We reuse file_abs to store the remote URL
+                ext: ext.clone(),
+                position: position as i32,
+            });
+        }
+    }
+
+    Ok(posts)
+}
+
+#[tauri::command]
+pub fn save_pools_cache(app: AppHandle, pools: Vec<PoolInfo>) -> Result<(), String> {
+    let root = get_root(&app)?;
+    let cache_dir = root.join(".cache");
+    if !cache_dir.exists() {
+        std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let cache_file = cache_dir.join("pools_cache.json");
+    let json = serde_json::to_string(&pools).map_err(|e| e.to_string())?;
+    std::fs::write(cache_file, json).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn load_pools_cache(app: AppHandle) -> Result<Vec<PoolInfo>, String> {
+    let root = get_root(&app)?;
+    let cache_file = root.join(".cache").join("pools_cache.json");
+    
+    if !cache_file.exists() {
+        return Ok(vec![]);
+    }
+    
+    let json = std::fs::read_to_string(cache_file).map_err(|e| e.to_string())?;
+    let pools: Vec<PoolInfo> = serde_json::from_str(&json).unwrap_or_default();
+    
+    Ok(pools)
 }
 
 #[tauri::command]

@@ -80,6 +80,13 @@ pub fn run() {
       commands::has_safe_pin,
       commands::verify_safe_pin,
       commands::clear_safe_pin,
+      commands::clear_safe_pin,
+      commands::get_all_e621_ids,
+      commands::check_posts_for_pools,
+      commands::fetch_pool_info,
+      commands::get_pool_posts,
+      commands::save_pools_cache,
+      commands::load_pools_cache,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
