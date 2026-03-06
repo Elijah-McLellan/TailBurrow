@@ -1401,6 +1401,89 @@ pub fn auto_clean_trash(app: tauri::AppHandle) {
     let _ = prune_expired_trash(&app);
 }
 
+#[tauri::command]
+pub fn has_app_lock() -> Result<bool, String> {
+    Ok(crate::secrets::get_secret("app_lock_hash")?.is_some())
+}
+
+#[tauri::command]
+pub fn set_app_lock(pin: String) -> Result<(), String> {
+    let pin = pin.trim();
+    if pin.len() < 4 {
+        return Err("PIN must be at least 4 characters".into());
+    }
+    let salted = format!("tailburrow_lock_{}", pin);
+    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    crate::secrets::set_secret("app_lock_hash", &hash)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn verify_app_lock(pin: String) -> Result<bool, String> {
+    let stored = match crate::secrets::get_secret("app_lock_hash")? {
+        Some(h) => h,
+        None => return Ok(true), // No lock set, always pass
+    };
+    let salted = format!("tailburrow_lock_{}", pin.trim());
+    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    Ok(hash == stored)
+}
+
+#[tauri::command]
+pub fn clear_app_lock(pin: String) -> Result<(), String> {
+    // Verify current PIN before clearing
+    let stored = crate::secrets::get_secret("app_lock_hash")?
+        .ok_or("No lock configured")?;
+    let salted = format!("tailburrow_lock_{}", pin.trim());
+    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    if hash != stored {
+        return Err("Incorrect PIN".into());
+    }
+    crate::secrets::delete_secret("app_lock_hash")?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_safe_pin(pin: String) -> Result<(), String> {
+    let pin = pin.trim();
+    if pin.len() < 4 {
+        return Err("PIN must be at least 4 characters".into());
+    }
+    let salted = format!("tailburrow_safe_{}", pin);
+    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    crate::secrets::set_secret("app_safe_hash", &hash)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn has_safe_pin() -> Result<bool, String> {
+    Ok(crate::secrets::get_secret("app_safe_hash")?.is_some())
+}
+
+#[tauri::command]
+pub fn verify_safe_pin(pin: String) -> Result<bool, String> {
+    let stored = match crate::secrets::get_secret("app_safe_hash")? {
+        Some(h) => h,
+        None => return Ok(false),
+    };
+    let salted = format!("tailburrow_safe_{}", pin.trim());
+    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    Ok(hash == stored)
+}
+
+#[tauri::command]
+pub fn clear_safe_pin(pin: String) -> Result<(), String> {
+    let stored = crate::secrets::get_secret("app_safe_hash")?
+        .ok_or("No safe PIN configured")?;
+    let salted = format!("tailburrow_safe_{}", pin.trim());
+    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    if hash != stored {
+        return Err("Incorrect PIN".into());
+    }
+    crate::secrets::delete_secret("app_safe_hash")?;
+    Ok(())
+}
+
 // Prune items trashed more than 30 days ago
 pub fn prune_expired_trash(app: &tauri::AppHandle) -> Result<(), String> {
     let root = match get_root(app) {

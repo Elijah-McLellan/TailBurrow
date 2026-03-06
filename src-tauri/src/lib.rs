@@ -72,6 +72,14 @@ pub fn run() {
       commands::e621_sync_status,
       commands::e621_sync_cancel,
       commands::e621_unavailable_list,
+      commands::has_app_lock,
+      commands::set_app_lock,
+      commands::verify_app_lock,
+      commands::clear_app_lock,
+      commands::set_safe_pin,
+      commands::has_safe_pin,
+      commands::verify_safe_pin,
+      commands::clear_safe_pin,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

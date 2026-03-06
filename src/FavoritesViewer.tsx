@@ -652,6 +652,10 @@ export default function FavoritesViewer() {
     }, TOAST_DURATION_MS);
   }, []);
   // --- STATE ---
+  const [isLocked, setIsLocked] = useState(true);
+  const [lockChecked, setLockChecked] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
   const [activeTab, setActiveTab] = useState('viewer');
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [searchTags, setSearchTags] = useState('');
@@ -764,6 +768,14 @@ export default function FavoritesViewer() {
   const [faCredsSet, setFaCredsSet] = useState(false);
   const [faLimit, setFaLimit] = useState("");
 
+  // App Lock
+  const [hasLock, setHasLock] = useState(false);
+  const [lockNewPin, setLockNewPin] = useState('');
+  const [lockConfirmPin, setLockConfirmPin] = useState('');
+  const [lockRemovePin, setLockRemovePin] = useState('');
+  const [safeMode, setSafeMode] = useState(false);
+  const [safePinInput, setSafePinInput] = useState('');
+
   // --- DERIVED STATE (stable) ---
   const isStudio = viewerLayout === 'studio';
   const currentItem = items[currentIndex] || null;
@@ -837,7 +849,10 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
 
     try {
       const offset = append ? itemsRef.current.length : 0;
-      const combinedSearch = [searchTags, ...selectedTags].join(" ").trim();
+      let combinedSearch = [searchTags, ...selectedTags].join(" ").trim();
+      if (safeMode && !combinedSearch.includes("rating:")) {
+        combinedSearch = combinedSearch ? `${combinedSearch} rating:s` : "rating:s";
+      }
       const rows = await invoke<ItemDto[]>("list_items", {
         limit,
         offset,
@@ -878,7 +893,7 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
         setIsSearching(false);
       }
     }
-  }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder, toast]);
+  }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder, toast, safeMode]);
 
   const loadMoreItems = useCallback(async () => {
     if (loadingRef.current || !hasMoreRef.current) return;
@@ -1021,7 +1036,8 @@ if (loadingFeedsRef.current[feedId]) return;
 
     try {
       const pageParam = (!reset && currentPaging?.beforeId) ? `b${currentPaging.beforeId}` : "1";
-      const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: query, limit: FEED_PAGE_LIMIT, page: pageParam });
+      const safeQuery = safeMode && !query.includes("rating:") ? `${query} rating:s` : query;
+      const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: safeQuery, limit: FEED_PAGE_LIMIT, page: pageParam });
       const rawPosts = data.posts || [];
 
       const blTags = blacklist.toLowerCase().split(/[\s\n]+/).filter(Boolean);
@@ -1112,7 +1128,8 @@ if (loadingFeedsRef.current[feedId]) return;
     setSelectedFeedPost(null);
 
     try {
-      const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: query.trim(), limit: FEED_PAGE_LIMIT, page: "1" });
+      const safeQuery = safeMode && !query.includes("rating:") ? `${query.trim()} rating:s` : query.trim();
+      const data = await invoke<{ posts: E621Post[] }>("e621_fetch_posts", { tags: safeQuery, limit: FEED_PAGE_LIMIT, page: "1" });
       const rawPosts = data.posts || [];
 
       const blTags = blacklist.toLowerCase().split(/[\s\n]+/).filter(Boolean);
@@ -1218,6 +1235,68 @@ if (loadingFeedsRef.current[feedId]) return;
     setTrashCount(0);
   }, []);
 
+  const handleUnlock = useCallback(async () => {
+    setPinError('');
+    try {
+      // Check safe PIN first
+      const isSafe = await invoke<boolean>("verify_safe_pin", { pin: pinInput });
+      if (isSafe) {
+        setSafeMode(true);
+        setIsLocked(false);
+        setPinInput('');
+        return;
+      }
+
+      const ok = await invoke<boolean>("verify_app_lock", { pin: pinInput });
+      if (ok) {
+        setSafeMode(false);
+        setIsLocked(false);
+        setPinInput('');
+      } else {
+        setPinError('Incorrect PIN');
+        setPinInput('');
+      }
+    } catch (e) {
+      setPinError(String(e));
+    }
+  }, [pinInput]);
+
+  const handleSetLock = useCallback(async () => {
+    if (lockNewPin.length < 4) {
+      toast("PIN must be at least 4 characters.", "error");
+      return;
+    }
+    if (lockNewPin !== lockConfirmPin) {
+      toast("PINs don't match.", "error");
+      return;
+    }
+    try {
+      await invoke("set_app_lock", { pin: lockNewPin });
+      setHasLock(true);
+      setLockNewPin('');
+      setLockConfirmPin('');
+      toast("App lock enabled.", "success");
+    } catch (e) {
+      toast("Failed to set lock: " + String(e), "error");
+    }
+  }, [lockNewPin, lockConfirmPin, toast]);
+
+  const handleRemoveLock = useCallback(async () => {
+    if (!lockRemovePin) {
+      toast("Enter your current PIN to remove lock.", "error");
+      return;
+    }
+    try {
+      await invoke("clear_app_lock", { pin: lockRemovePin });
+      setHasLock(false);
+      setLockRemovePin('');
+      toast("App lock removed.", "success");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }, [lockRemovePin, toast]);
+
+
   // --- EDIT MODAL ---
   const openEditModal = useCallback(() => {
     if (!currentItem) return;
@@ -1301,6 +1380,19 @@ if (loadingFeedsRef.current[feedId]) return;
   useEffect(() => {
     let cancelled = false;
     const init = async () => {
+      // Check app lock first
+      try {
+        const locked = await invoke<boolean>("has_app_lock");
+        setHasLock(locked);
+        if (!locked) {
+          setIsLocked(false);
+        }
+        setLockChecked(true);
+      } catch {
+        setIsLocked(false);
+        setLockChecked(true);
+      }
+
       setInitialLoading(true);
       try {
         await loadData(false);
@@ -1367,6 +1459,15 @@ if (loadingFeedsRef.current[feedId]) return;
       }
 
       if (key === "s") { e.preventDefault(); setShowSettings(prev => !prev); }
+      if (key === "l" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (hasLock) {
+          setIsLocked(true);
+          setSafeMode(false);
+          setPinInput('');
+          setPinError('');
+        }
+      }
 
       if (activeTab === "viewer") {
         if (key === "a" || e.key === "ArrowLeft") { e.preventDefault(); goToPrev(true); }
@@ -1408,6 +1509,21 @@ if (loadingFeedsRef.current[feedId]) return;
       if (faSyncIntervalRef.current) clearInterval(faSyncIntervalRef.current);
     };
   }, []);
+
+  // Auto-lock on OS lock (screen lock / sleep)
+  useEffect(() => {
+    if (!hasLock) return;
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        setIsLocked(true);
+        setSafeMode(false);
+        setPinInput('');
+        setPinError('');
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [hasLock]);
 
   // Fullscreen exit handler
   useEffect(() => {
@@ -1496,7 +1612,7 @@ if (loadingFeedsRef.current[feedId]) return;
   // Reload when filters change
   const filterKeyRef = useRef("");
   useEffect(() => {
-    const key = `${sortOrder}|${filterSource}|${selectedTags.join(",")}`;
+    const key = `${sortOrder}|${filterSource}|${selectedTags.join(",")}|${safeMode}`;
     if (filterKeyRef.current === key) return; // Skip initial
     if (filterKeyRef.current === "") { filterKeyRef.current = key; return; } // first mount
     filterKeyRef.current = key;
@@ -1507,9 +1623,8 @@ if (loadingFeedsRef.current[feedId]) return;
       loadData(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortOrder, filterSource, selectedTags]);
+  }, [sortOrder, filterSource, selectedTags, safeMode]);
 
-  // Autoscroll
   // Autoscroll
   const autoscrollTargetRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
@@ -1577,7 +1692,52 @@ if (loadingFeedsRef.current[feedId]) return;
 const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
   // --- RENDER ---
   return (
-    <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col bg-gray-900 text-white"}>      {/* Header */}
+    <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col bg-gray-900 text-white"}>
+      {/* Lock Screen */}
+      {(!lockChecked || (isLocked && hasLock)) && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[#0f0f17]">
+          {lockChecked ? (
+            <div className="text-center">
+              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-[#1d1b2d] flex items-center justify-center">
+                <svg className="w-8 h-8 text-[#967abc]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+              </div>
+              <h2 className="text-xl font-bold text-white mb-2">TailBurrow</h2>
+              <p className="text-[#4c4b5a] text-sm mb-6">Enter PIN to unlock</p>
+              <div className="flex gap-2 justify-center mb-3">
+                <input
+                  type="password"
+                  value={pinInput}
+                  onChange={(e) => { setPinInput(e.target.value); setPinError(''); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleUnlock(); }}
+                  placeholder="••••"
+                  maxLength={16}
+                  autoFocus
+                  className="w-48 px-4 py-3 text-center text-lg tracking-[0.3em] rounded-xl bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] focus:outline-none text-white placeholder-[#4c4b5a]"
+                />
+              </div>
+              {pinError && <p className="text-red-400 text-sm mb-3">{pinError}</p>}
+              <button
+                onClick={handleUnlock}
+                disabled={!pinInput}
+                className="px-8 py-2.5 rounded-xl bg-[#967abc] hover:bg-[#967abc]/80 text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Unlock
+              </button>
+            </div>
+          ) : (
+            <div className="w-16 h-16 rounded-2xl bg-[#1d1b2d] flex items-center justify-center animate-pulse">
+              <svg className="w-8 h-8 text-[#967abc]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </div>
+          )}
+        </div>
+      )}
+      {/* Header */}
       <div className={`border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
         <div className={isStudio ? "px-4" : "max-w-7xl mx-auto px-4"}>
           <div className="flex items-center gap-4 py-2">
@@ -2641,6 +2801,99 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal;
                     <div className="text-purple-400">Upgraded to e621: {faStatus.upgraded}</div>
                     <div className="text-green-400">FA Exclusives: {faStatus.imported}</div>
                     <div>Errors: {faStatus.errors}</div>
+                  </div>
+                )}
+              </div>
+              {/* App Lock */}
+              <div className={`border-t pt-4 mt-4 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
+                <h3 className="text-lg font-semibold mb-2">App Lock</h3>
+                <p className={`text-xs mb-3 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                  Require a PIN to open the app. Auto-locks when window loses focus.
+                </p>
+
+                {hasLock ? (
+                  <div>
+                    <div className={`flex items-center gap-2 p-3 rounded-xl mb-3 ${isStudio ? 'bg-[#0f0f17] border border-green-900/50' : 'bg-gray-900 border border-green-900/50'}`}>
+                      <div className="w-2 h-2 rounded-full bg-green-500" />
+                      <span className={`text-sm ${isStudio ? 'text-[#9e98aa]' : 'text-gray-300'}`}>Lock is enabled</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        placeholder="Current PIN"
+                        value={lockRemovePin}
+                        onChange={(e) => setLockRemovePin(e.target.value)}
+                        className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
+                      />
+                      <button onClick={handleRemoveLock} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl">
+                        Remove Lock
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      placeholder="New PIN (min 4)"
+                      value={lockNewPin}
+                      onChange={(e) => setLockNewPin(e.target.value)}
+                      className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
+                    />
+                    <input
+                      type="password"
+                      placeholder="Confirm PIN"
+                      value={lockConfirmPin}
+                      onChange={(e) => setLockConfirmPin(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleSetLock(); }}
+                      className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
+                    />
+                    <button onClick={handleSetLock} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}>
+                      Set Lock
+                    </button>
+                  </div>
+                )}
+
+                {hasLock && (
+                  <div className={`mt-4 pt-4 border-t ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
+                    <h4 className="text-sm font-semibold mb-1">Safe Mode PIN</h4>
+                    <p className={`text-xs mb-3 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                      A separate PIN that opens the app showing only safe-rated content. No visible indicator.
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="password"
+                        placeholder="Safe PIN (min 4)"
+                        value={safePinInput}
+                        onChange={(e) => setSafePinInput(e.target.value)}
+                        className={`flex-1 px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
+                      />
+                      <button
+                        onClick={async () => {
+                          if (safePinInput.length < 4) { toast("PIN must be at least 4 characters.", "error"); return; }
+                          try {
+                            await invoke("set_safe_pin", { pin: safePinInput });
+                            setSafePinInput('');
+                            toast("Safe mode PIN set.", "success");
+                          } catch (e) { toast(String(e), "error"); }
+                        }}
+                        className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
+                      >
+                        Set
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!safePinInput) { toast("Enter current safe PIN to remove.", "error"); return; }
+                          try {
+                            await invoke("clear_safe_pin", { pin: safePinInput });
+                            setSafePinInput('');
+                            toast("Safe mode PIN removed.", "success");
+                          } catch (e) { toast(String(e), "error"); }
+                        }}
+                        className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
