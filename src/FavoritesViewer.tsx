@@ -7,11 +7,11 @@ import {
   Info, Undo, ChevronsDown, BookOpen, ArrowLeft, ZoomIn, ZoomOut
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { open as openDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import Masonry from "react-masonry-css";
 
-const APP_VERSION = "0.2.4";
+const APP_VERSION = "0.3.0";
 const TOAST_DURATION_MS = 4000;
 
 type Toast = {
@@ -391,6 +391,10 @@ const GridItem = React.memo(({ item, index, onSelect, isSelected }: {
       if (hoverTimeoutRef.current) {
         clearTimeout(hoverTimeoutRef.current);
       }
+      const video = videoRef.current;
+      if (video && !video.paused) {
+        video.pause();
+      }
     };
   }, []);
 
@@ -581,6 +585,106 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
   );
 };
 
+const ComicPage = ({ post, comicScale, isStudio }: {
+  post: PoolPost; comicScale: number; isStudio: boolean;
+}) => {
+  const isVideo = ['mp4', 'webm'].includes(post.ext.toLowerCase());
+  const isLocal = post.item_id !== 0;
+  const [src, setSrc] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc('');
+    setLoading(true);
+    setError(false);
+
+    if (isLocal) {
+      setSrc(convertFileSrc(post.file_abs));
+      setLoading(false);
+      return;
+    }
+
+    // Remote content — proxy videos through backend, images load directly
+    if (isVideo) {
+      invoke<string>("proxy_remote_media", { url: post.file_abs })
+        .then(localPath => {
+          if (!cancelled) {
+            setSrc(convertFileSrc(localPath));
+            setLoading(false);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setError(true);
+            setLoading(false);
+          }
+        });
+    } else {
+      setSrc(post.file_abs);
+      setLoading(false);
+    }
+
+    return () => { cancelled = true; };
+  }, [post.file_abs, post.item_id, isLocal, isVideo]);
+
+  return (
+    <div style={{ width: `${comicScale}%` }} className="relative group max-w-full overflow-hidden">
+      {isLocal && (
+        <div className="absolute top-2 left-2 z-10 bg-green-500/80 text-white p-1.5 rounded-full pointer-events-none">
+          <Database className="w-3.5 h-3.5" />
+        </div>
+      )}
+      {loading ? (
+        <div
+          className="w-full max-w-full aspect-video flex items-center justify-center"
+          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+        >
+          <Loader2 className="w-8 h-8 animate-spin text-gray-500" />
+        </div>
+      ) : error ? (
+        <div
+          className="w-full aspect-video flex flex-col items-center justify-center gap-2 text-gray-500"
+          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+        >
+          <p className="text-sm">Failed to load video</p>
+          <button
+            onClick={() => {
+              try {
+                const url = `https://e621.net/posts/${post.source_id}`;
+                openUrl(url);
+              } catch { /* ignore */ }
+            }}
+            className={`text-xs px-3 py-1.5 rounded-lg ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#967abc]' : 'bg-gray-700 hover:bg-gray-600 text-purple-400'}`}
+          >
+            View on e621
+          </button>
+        </div>
+      ) : isVideo ? (
+        <video
+          key={src}
+          src={src}
+          controls
+          playsInline
+          preload="auto"
+          className="w-full h-auto max-w-full"
+          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000', display: 'block' }}
+        />
+      ) : (
+        <img
+          src={src}
+          alt={`Page ${post.position + 1}`}
+          className="w-full h-auto block max-w-full"
+          loading="lazy"
+          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+          referrerPolicy="no-referrer"
+        />
+      )}
+    </div>
+  );
+};
+
 // ─── RESIZE HANDLE ───────────────────────────────────────────
 const ResizeHandle = ({ onDrag }: { onDrag: (clientX: number) => void }) => {
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -653,7 +757,8 @@ const SkeletonTagList = ({ count = 10 }: { count?: number }) => (
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────
 export default function FavoritesViewer() {
-
+  type ConfirmOpts = { title: string; message: string; okLabel?: string; cancelLabel?: string; onConfirm: () => void };
+  const [confirmModal, setConfirmModal] = useState<ConfirmOpts | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const dismissToast = useCallback((id: number) => {
@@ -805,7 +910,6 @@ export default function FavoritesViewer() {
   const [poolScanProgress, setPoolScanProgress] = useState<{ current: number; total: number } | null>(null);
   const comicContainerRef = useRef<HTMLDivElement>(null);
 
-
   // --- DERIVED STATE (stable) ---
   const isStudio = viewerLayout === 'studio';
   const currentItem = items[currentIndex] || null;
@@ -843,20 +947,9 @@ export default function FavoritesViewer() {
     [items]
   );
 
-const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tags: [] });
+const allTags = useMemo(() => {
+    if (viewMode !== 'grid' || items.length === 0) return [];
 
-  const allTags = useMemo(() => {
-    // Only needed in grid mode
-    if (viewMode !== 'grid') return allTagsCache.current.tags;
-
-    // Skip recomputation if item count hasn't changed significantly (within 10%)
-    const cachedLen = allTagsCache.current.length;
-    const currentLen = items.length;
-    if (cachedLen > 0 && Math.abs(currentLen - cachedLen) / cachedLen < 0.1) {
-      return allTagsCache.current.tags;
-    }
-
-    // Sample up to 500 items for performance (still representative for popular tags)
     const sampleSize = Math.min(items.length, 500);
     const step = items.length <= sampleSize ? 1 : Math.floor(items.length / sampleSize);
 
@@ -868,13 +961,10 @@ const allTagsCache = useRef<{ length: number; tags: string[] }>({ length: 0, tag
       });
     }
 
-    const result = Array.from(tagCounts.entries())
+    return Array.from(tagCounts.entries())
       .sort(([, a], [, b]) => b - a)
-      .slice(0, 100) // Only need top 100, UI shows 50
+      .slice(0, 100)
       .map(([tag]) => tag);
-
-    allTagsCache.current = { length: currentLen, tags: result };
-    return result;
   }, [items, viewMode]);
 
   // --- CORE DATA ---
@@ -1137,6 +1227,8 @@ if (loadingFeedsRef.current[feedId]) return;
         await loadData(false);
       }
       await invoke("e621_favorite", { postId: id });
+
+      // Update grid posts
       if (feedId === -1) {
         setFeedSearchResults(prev => prev.map(p => p.id === id ? { ...p, is_favorited: true } : p));
       } else {
@@ -1145,6 +1237,12 @@ if (loadingFeedsRef.current[feedId]) return;
           [feedId]: (prev[feedId] || []).map((p) => p.id === id ? { ...p, is_favorited: true } : p),
         }));
       }
+
+      // ─── FIX: also update the detail-pane post ───
+      setSelectedFeedPost(prev =>
+        prev && prev.id === id ? { ...prev, is_favorited: true } : prev
+      );
+
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), "error");
     } finally {
@@ -1197,21 +1295,15 @@ if (loadingFeedsRef.current[feedId]) return;
     if (!dir || Array.isArray(dir)) return;
     await invoke("set_library_root", { libraryRoot: dir });
     await refreshLibraryRoot();
+    setPools([]);
+    setSelectedPool(null);
+    setPoolPosts([]);
     await loadData(false);
+    try {
+      const cachedPools = await invoke<PoolInfo[]>("load_pools_cache");
+      if (cachedPools?.length) setPools(cachedPools);
+    } catch { /* no cache for new library */ }
   }, [refreshLibraryRoot, loadData]);
-
-  // const toggleFullscreen = useCallback(async () => {
-  //   if (viewerOverlay) pokeHud();
-  //   try {
-  //     if (!document.fullscreenElement) {
-  //       await document.documentElement.requestFullscreen();
-  //     } else {
-  //       await document.exitFullscreen();
-  //     }
-  //   } catch (e) {
-  //     console.warn("Fullscreen request failed:", e);
-  //   }
-  // }, [viewerOverlay, pokeHud]);
 
   const openExternalUrl = useCallback(async (url: string) => {
     try { await openUrl(url); } catch (e) { console.error("Failed to open URL:", e); toast("Failed to open link.", "error"); }
@@ -1263,15 +1355,17 @@ if (loadingFeedsRef.current[feedId]) return;
     loadData(false);
   }, [loadData]);
 
-  const handleEmptyTrash = useCallback(async () => {
-    const ok = await confirmDialog(
-      "Permanently delete all items in trash? This cannot be undone.",
-      { title: "Empty Trash", okLabel: "Delete Forever", cancelLabel: "Cancel" }
-    );
-    if (!ok) return;
-    await invoke("empty_trash");
-    setTrashedItems([]);
-    setTrashCount(0);
+  const handleEmptyTrash = useCallback(() => {
+    setConfirmModal({
+      title: "Empty Trash",
+      message: "Permanently delete all items in trash? This cannot be undone.",
+      okLabel: "Delete Forever",
+      onConfirm: async () => {
+        await invoke("empty_trash");
+        setTrashedItems([]);
+        setTrashCount(0);
+      },
+    });
   }, []);
 
   const loadPools = useCallback(async () => {
@@ -1281,56 +1375,67 @@ if (loadingFeedsRef.current[feedId]) return;
     }
     setPoolsLoading(true);
     setPoolScanProgress({ current: 0, total: 0 });
-    
+
     try {
-      // 1. Get all local IDs instantly
-      const localIds = await invoke<number[]>("get_all_e621_ids");
-      
+      const knownPoolIds: number[] = await invoke("get_known_pool_ids");
+
+      const existingIds = new Set<number>();
+      setPools(prev => { prev.forEach(p => existingIds.add(p.pool_id)); return prev; });
+
+      const newDbPoolIds = knownPoolIds.filter(id => !existingIds.has(id));
+
+      if (newDbPoolIds.length > 0) {
+        const infos = await invoke<PoolInfo[]>("fetch_pool_infos_batch", { poolIds: newDbPoolIds });
+        if (infos.length > 0) {
+          setPools(prev => {
+            const poolMap = new Map(prev.map(p => [p.pool_id, p]));
+            infos.forEach(p => poolMap.set(p.pool_id, p));
+            const next = Array.from(poolMap.values());
+            next.sort((a, b) => a.name.localeCompare(b.name));
+            invoke("save_pools_cache", { pools: next }).catch(console.error);
+            return next;
+          });
+          infos.forEach(p => existingIds.add(p.pool_id));
+        }
+      }
+
+      const localIds: number[] = await invoke("get_unscanned_e621_ids");
+
       if (localIds.length === 0) {
-        setPoolsLoading(false);
-        setPoolScanProgress(null);
         return;
       }
-      
+
       setPoolScanProgress({ current: 0, total: localIds.length });
-      
-      // Keep track of pools we already know so we don't re-fetch them
-      // Read directly from the latest state to avoid stale closure issues
-      const knownPools = new Set<number>();
-      setPools(currentPools => {
-        currentPools.forEach(p => knownPools.add(p.pool_id));
-        return currentPools; // return unchanged
-      });
-      
-            // 2. Scan them in batches of 100
+      const discoveredPoolIds = new Set<number>();
+
       for (let i = 0; i < localIds.length; i += 100) {
+
         const chunk = localIds.slice(i, i + 100);
-        
         try {
           const foundPoolIds = await invoke<number[]>("check_posts_for_pools", { ids: chunk });
-          
-          for (const pid of foundPoolIds) {
-            if (!knownPools.has(pid)) {
-              knownPools.add(pid);
-              // Fetch pool cover immediately so it pops into the grid real-time
-              const poolInfo = await invoke<PoolInfo | null>("fetch_pool_info", { poolId: pid });
-              if (poolInfo) {
-                setPools(prev => {
-                  const next = [...prev, poolInfo];
-                  next.sort((a, b) => a.name.localeCompare(b.name));
-                  // Fire-and-forget save to cache so it persists instantly
-                  invoke("save_pools_cache", { pools: next }).catch(console.error);
-                  return next;
-                });
-              }
-            }
-          }
+          foundPoolIds.forEach(pid => {
+            if (!existingIds.has(pid)) discoveredPoolIds.add(pid);
+          });
         } catch (err) {
           console.warn("Chunk scan error", err);
         }
-        
-        // Update progress bar
         setPoolScanProgress({ current: Math.min(i + 100, localIds.length), total: localIds.length });
+      }
+
+      const newPoolIds = Array.from(discoveredPoolIds);
+
+      if (newPoolIds.length > 0) {
+        const infos = await invoke<PoolInfo[]>("fetch_pool_infos_batch", { poolIds: newPoolIds });
+        if (infos.length > 0) {
+          setPools(prev => {
+            const poolMap = new Map(prev.map(p => [p.pool_id, p]));
+            infos.forEach(p => poolMap.set(p.pool_id, p));
+            const next = Array.from(poolMap.values());
+            next.sort((a, b) => a.name.localeCompare(b.name));
+            invoke("save_pools_cache", { pools: next }).catch(console.error);
+            return next;
+          });
+        }
       }
     } catch (e) {
       toast("Failed to scan pools: " + String(e), "error");
@@ -1359,20 +1464,21 @@ if (loadingFeedsRef.current[feedId]) return;
     setComicAutoscroll(false);
   }, []);
 
-    const handleClearPoolsCache = useCallback(async () => {
-    const ok = await confirmDialog(
-      "Are you sure you want to clear the comics cache? You will need to rescan to see them again.",
-      { title: "Clear Cache", okLabel: "Clear", cancelLabel: "Cancel" }
-    );
-    if (!ok) return;
-
-    try {
-      await invoke("clear_pools_cache");
-      setPools([]);
-      toast("Comics cache cleared.", "success");
-    } catch (e) {
-      toast("Failed to clear cache: " + String(e), "error");
-    }
+  const handleClearPoolsCache = useCallback(() => {
+    setConfirmModal({
+      title: "Clear Cache",
+      message: "Are you sure you want to clear the comics cache? You will need to rescan to see them again.",
+      okLabel: "Clear",
+      onConfirm: async () => {
+        try {
+          await invoke("clear_pools_cache");
+          setPools([]);
+          toast("Comics cache cleared.", "success");
+        } catch (e) {
+          toast("Failed to clear cache: " + String(e), "error");
+        }
+      },
+    });
   }, [toast]);
 
   const handleUnlock = useCallback(async () => {
@@ -1594,6 +1700,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
       if (e.key === "Escape") {
         e.preventDefault();
+        if (confirmModal) { setConfirmModal(null); return; }
         if (showSettings) { setShowSettings(false); return; }
         if (showEditModal) { setShowEditModal(false); return; }
         if (showTrashModal) { setShowTrashModal(false); return; }
@@ -1604,7 +1711,21 @@ if (loadingFeedsRef.current[feedId]) return;
           setViewerOverlay(false);
           return;
         }
+        if (activeTab === 'comics' && selectedPool) { closePool(); return; }
         if (viewMode === 'single') { setViewMode('grid'); return; }
+      }
+      // Comic zoom: Ctrl+ / Ctrl-
+      if (activeTab === 'comics' && selectedPool && (e.ctrlKey || e.metaKey)) {
+        if (key === '=' || key === '+') {
+          e.preventDefault();
+          setComicScale(s => Math.min(100, s + 10));
+          return;
+        }
+        if (key === '-') {
+          e.preventDefault();
+          setComicScale(s => Math.max(10, s - 10));
+          return;
+        }
       }
 
       if (key === "s") { e.preventDefault(); setShowSettings(prev => !prev); }
@@ -1648,7 +1769,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, viewMode]);
+  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, viewMode, selectedPool, closePool, confirmModal]);
 
   // HUD management
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
@@ -1759,12 +1880,17 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [currentIndex, itemCount, hasMoreItems, isLoadingMore, loadMoreItems]);
 
   // Reload when filters change
+  const isFirstMountRef = useRef(true);
   const filterKeyRef = useRef("");
   useEffect(() => {
     const key = `${sortOrder}|${filterSource}|${selectedTags.join(",")}|${safeMode}`;
-    if (filterKeyRef.current === key) return; // Skip initial
-    if (filterKeyRef.current === "") { filterKeyRef.current = key; return; } // first mount
+    if (filterKeyRef.current === key) return;
     filterKeyRef.current = key;
+
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      return;
+    }
 
     if (!initialLoading) {
       setItems([]);
@@ -1853,7 +1979,7 @@ if (loadingFeedsRef.current[feedId]) return;
 const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || activeTab === 'comics';
   // --- RENDER ---
   return (
-    <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col bg-gray-900 text-white"}>
+    <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col overflow-x-hidden bg-gray-900 text-white"}>
       {/* Lock Screen */}
       {(!lockChecked || (isLocked && hasLock)) && (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[#0f0f17]">
@@ -1978,6 +2104,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {/* Viewer Tab */}
       {activeTab === 'viewer' && (
         <>
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {selectedTags.length > 0 && (
             <div className={`px-4 py-2 flex gap-2 flex-wrap border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
               {selectedTags.map(tag => (
@@ -2427,6 +2554,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               )}
             </div>
           )}
+        </div>
         </>
       )}
 
@@ -2740,11 +2868,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       )}
       {/* Comics Tab */}
       {activeTab === 'comics' && (
-        <div className={`flex-1 overflow-hidden flex flex-col ${isStudio ? 'bg-[#0f0f17]' : ''}`}>
-                    {selectedPool ? (
-            // Comic reader view
-            <div className="flex-1 relative overflow-hidden flex flex-col">
-              
+        <div className={`flex-1 overflow-hidden flex flex-col w-full min-w-0 ${isStudio ? 'bg-[#0f0f17]' : ''}`}>
+          {selectedPool ? (
+      // Comic reader view
+            <div className="flex-1 relative overflow-hidden flex flex-col w-full min-w-0">
               {/* Floating Header */}
               <div className="absolute top-0 left-0 right-0 z-20 p-4 pointer-events-none flex justify-between items-start">
                 {/* Back & Info Card */}
@@ -2762,11 +2889,11 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
 
                 {/* Controls Card */}
                 <div className={`pointer-events-auto flex items-center gap-2 p-2 rounded-2xl backdrop-blur-md border shadow-xl ${isStudio ? 'bg-[#161621]/80 border-[#1d1b2d]' : 'bg-gray-900/80 border-gray-700'}`}>
-                  <button onClick={() => setComicScale(s => Math.max(25, s - 25))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
+                  <button onClick={() => setComicScale(s => Math.max(10, s - 10))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
                     <ZoomOut className="w-4 h-4" />
                   </button>
                   <span className="text-sm font-medium w-12 text-center text-white drop-shadow-md">{comicScale}%</span>
-                  <button onClick={() => setComicScale(s => Math.min(100, s + 25))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
+                  <button onClick={() => setComicScale(s => Math.min(100, s + 10))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
                     <ZoomIn className="w-4 h-4" />
                   </button>
                   <div className="w-px h-6 bg-gray-500/50 mx-1" />
@@ -2788,7 +2915,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               </div>
 
               {/* Comic pages */}
-              <div ref={comicContainerRef} className="flex-1 overflow-y-auto">
+              <div ref={comicContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden w-full min-w-0">
                 {poolPostsLoading ? (
                   <div className="flex items-center justify-center py-20">
                     <Loader2 className={`w-8 h-8 animate-spin ${isStudio ? 'text-[#967abc]' : 'text-purple-500'}`} />
@@ -2800,42 +2927,22 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     <p className="text-sm mt-2">Favorite more posts from this pool on e621</p>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center py-4" style={{ gap: '2px' }}>
-                    {poolPosts.map((post) => {
-                      const isVideo = ['mp4', 'webm'].includes(post.ext.toLowerCase());
-                      return (
-                        <div key={`${post.source_id}-${post.position}`} style={{ width: `${comicScale}%`, maxWidth: '100%' }} className="relative">
-                          {post.item_id === 0 && (
-                            <div className="absolute top-2 right-2 z-10 bg-black/70 text-xs px-2 py-1 rounded-full text-gray-300 pointer-events-none">
-                              Remote
-                            </div>
-                          )}
-                          {isVideo ? (
-                            <video
-                              src={post.item_id === 0 ? post.file_abs : convertFileSrc(post.file_abs)}
-                              controls
-                              className="w-full h-auto"
-                              style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
-                            />
-                          ) : (
-                            <img
-                              src={post.item_id === 0 ? post.file_abs : convertFileSrc(post.file_abs)}
-                              alt={`Page ${post.position + 1}`}
-                              className="w-full h-auto"
-                              loading="lazy"
-                              style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
+                  <div className="flex flex-col items-center py-4 w-full min-w-0 px-0" style={{ gap: '2px' }}>
+                    {poolPosts.map((post) => (
+                      <ComicPage
+                        key={`${post.source_id}-${post.position}`}
+                        post={post}
+                        comicScale={comicScale}
+                        isStudio={isStudio}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
             </div>
           ) : (
             // Pool grid view
-            <div className={`flex-1 overflow-y-auto p-4 ${!isStudio ? 'max-w-7xl mx-auto w-full' : ''}`}>
+            <div className={`flex-1 overflow-y-auto overflow-x-hidden p-4 w-full min-w-0 ${!isStudio ? 'max-w-7xl mx-auto' : ''}`}>
               <div className="flex items-center justify-between gap-4 mb-4">
                 <h2 className="text-xl font-bold flex-shrink-0">Comics & Pools</h2>
                 
@@ -2849,7 +2956,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       <Trash2 className="w-5 h-5" />
                     </button>
                   )}
-                  
                   <button
                     onClick={loadPools}
                     disabled={poolsLoading}
@@ -2868,7 +2974,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         />
                         <span className="relative z-10 text-xs font-mono font-medium flex items-center gap-2">
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          {poolScanProgress.current} / {poolScanProgress.total}
+                          {poolScanProgress.current} / {poolScanProgress.total} unscanned
                         </span>
                       </>
                     ) : poolsLoading ? (
@@ -2901,7 +3007,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                  </div>
               ) : (
                 <Masonry
-                  breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
+                  breakpointCols={{
+                    default: gridColumns,
+                    1400: Math.max(1, gridColumns - 1),
+                    1000: Math.max(1, gridColumns - 2),
+                    700: 2,
+                    500: 1,
+                  }}
                   className="flex w-auto gap-3"
                   columnClassName="flex flex-col gap-3"
                 >
@@ -2912,20 +3024,23 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       className={`group cursor-pointer rounded-lg overflow-hidden border transition-all ${isStudio ? 'bg-[#161621] border-[#1d1b2d] hover:border-[#967abc]' : 'bg-gray-800 border-gray-700 hover:border-purple-500'}`}
                     >
                       {pool.cover_url ? (
-                        ['mp4', 'webm'].includes(pool.cover_ext.toLowerCase()) ? (
-                          <video
-                            src={pool.cover_url.startsWith('/') || pool.cover_url.startsWith('C:') ? convertFileSrc(pool.cover_url) : pool.cover_url}
-                            className="w-full h-auto object-cover"
-                            muted
-                          />
-                        ) : (
-                          <img
-                            src={pool.cover_url.startsWith('/') || pool.cover_url.startsWith('C:') ? convertFileSrc(pool.cover_url) : pool.cover_url}
-                            alt={pool.name}
-                            className="w-full h-auto object-cover"
-                            loading="lazy"
-                          />
-                        )
+                        <img
+                          src={pool.cover_url}
+                          alt={pool.name}
+                          className="w-full h-auto object-cover"
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                            if (e.currentTarget.nextElementSibling) return;
+                            const fallback = document.createElement('div');
+                            fallback.className = 'w-full flex items-center justify-center';
+                            fallback.style.aspectRatio = '3/4';
+                            fallback.style.backgroundColor = isStudio ? '#1d1b2d' : '#374151';
+                            fallback.innerHTML = '<svg style="width:3rem;height:3rem;opacity:0.3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>';
+                            e.currentTarget.parentElement?.appendChild(fallback);
+                          }}
+                        />
                       ) : (
                         <div className={`w-full aspect-[3/4] flex items-center justify-center ${isStudio ? 'bg-[#1d1b2d]' : 'bg-gray-700'}`}>
                           <BookOpen className="w-12 h-12 opacity-30" />
@@ -2964,17 +3079,23 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     <Trash2 className="w-4 h-4" />Trash ({trashCount})
                   </button>
                   <button
-                    onClick={async () => {
-                      const ok = await confirmDialog("Unload the current library?", { title: "Unload Library", okLabel: "Yes, unload", cancelLabel: "Cancel" });
-                      if (!ok) return;
-                      try {
-                        await invoke("clear_library_root");
-                        setLibraryRoot(""); setItems([]); setTotalDatabaseItems(0); setHasMoreItems(true);
-                        setShowSettings(false);
-                      } catch (e) {
-                        console.error("Failed to unload:", e);
-                        toast("Failed to unload: " + String(e), "error");
-                      }
+                    onClick={() => {
+                      setConfirmModal({
+                        title: "Unload Library",
+                        message: "Unload the current library?",
+                        okLabel: "Yes, unload",
+                        onConfirm: async () => {
+                          try {
+                            await invoke("clear_library_root");
+                            setLibraryRoot(""); setItems([]); setTotalDatabaseItems(0); setHasMoreItems(true);
+                            setPools([]); setSelectedPool(null); setPoolPosts([]);
+                            setShowSettings(false);
+                          } catch (e) {
+                            console.error("Failed to unload:", e);
+                            toast("Failed to unload: " + String(e), "error");
+                          }
+                        },
+                      });
                     }}
                     className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl"
                   >
@@ -3034,13 +3155,17 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       <span className="text-sm text-gray-300">Credentials Saved ({e621CredInfo.username})</span>
                     </div>
                     <button
-                      onClick={async () => {
-                        const ok = await confirmDialog("Clear e621 credentials?", { title: "Clear", okLabel: "Clear", cancelLabel: "Cancel" });
-                        if (ok) {
-                          await invoke("e621_clear_credentials");
-                          setApiUsername(""); setApiKey("");
-                          await refreshE621CredInfo();
-                        }
+                      onClick={() => {
+                        setConfirmModal({
+                          title: "Clear Credentials",
+                          message: "Clear e621 credentials?",
+                          okLabel: "Clear",
+                          onConfirm: async () => {
+                            await invoke("e621_clear_credentials");
+                            setApiUsername(""); setApiKey("");
+                            await refreshE621CredInfo();
+                          },
+                        });
                       }}
                       className="p-1.5 bg-red-900/50 hover:bg-red-600 rounded text-red-200 hover:text-white" title="Clear Credentials"
                     >
@@ -3126,9 +3251,15 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       <span className="text-sm text-gray-300">Cookies Saved</span>
                     </div>
                     <button
-                      onClick={async () => {
-                        const ok = await confirmDialog("Clear FurAffinity cookies?", { title: "Clear", okLabel: "Clear", cancelLabel: "Cancel" });
-                        if (ok) { setFaCredsSet(false); setFaCreds({ a: '', b: '' }); setIsEditingFA(true); }
+                      onClick={() => {
+                        setConfirmModal({
+                          title: "Clear Cookies",
+                          message: "Clear FurAffinity cookies?",
+                          okLabel: "Clear",
+                          onConfirm: () => {
+                            setFaCredsSet(false); setFaCreds({ a: '', b: '' }); setIsEditingFA(true);
+                          },
+                        });
                       }}
                       className="p-1.5 bg-red-900/50 hover:bg-red-600 rounded text-red-200 hover:text-white" title="Clear Cookies"
                     >
@@ -3438,6 +3569,29 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         hidden={shouldHideAutoscroll}
         isStudio={isStudio}
       />
+      {confirmModal && (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmModal(null)} />
+          <div className={`relative z-10 w-full max-w-md rounded-xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-150 ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
+            <h3 className="text-lg font-bold mb-2">{confirmModal.title}</h3>
+            <p className={`text-sm mb-6 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>{confirmModal.message}</p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmModal(null)}
+                className={`px-4 py-2 rounded-xl transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}
+              >
+                {confirmModal.cancelLabel || 'Cancel'}
+              </button>
+              <button
+                onClick={() => { confirmModal.onConfirm(); setConfirmModal(null); }}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 font-medium transition-colors"
+              >
+                {confirmModal.okLabel || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

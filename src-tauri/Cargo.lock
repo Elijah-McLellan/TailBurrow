@@ -4068,18 +4068,21 @@ dependencies = [
 
 [[package]]
 name = "tail-burrow"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "hex",
  "image",
  "keyring",
  "md5",
+ "rand 0.8.5",
  "reqwest",
  "rusqlite",
  "scraper",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

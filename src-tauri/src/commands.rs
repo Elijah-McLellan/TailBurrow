@@ -1,4 +1,5 @@
 use crate::{config, db, library};
+use sha2::{Sha256, Digest};
 use chrono::Utc;
 use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
@@ -233,42 +234,43 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
     let root = get_root(&app)?;
     library::ensure_layout(&root)?;
 
-    // Open connection for deduplication checks
-    let conn = db::open(&library::db_path(&root))?;
-    db::init_schema(&conn)?;
+    // ── Dedup checks (need their own connection) ──
+    let dedup_conn = db::open(&library::db_path(&root))?;
+    db::init_schema(&dedup_conn)?;
 
-    // Deduplicate by (source, id)
-    let exists: i64 = conn
+    let exists: i64 = dedup_conn
         .query_row(
             "SELECT COUNT(*) FROM items WHERE source='e621' AND source_id=? AND trashed_at IS NULL",
             params![post.id.to_string()],
             |r: &Row| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-        
+
     if exists > 0 {
         return Ok(Status { ok: true, message: "Already downloaded".into() });
     }
 
-    // Deduplicate by md5 if present
     if let Some(md5) = &post.file_md5 {
-        let md5_exists: i64 = conn
+        let md5_exists: i64 = dedup_conn
             .query_row(
                 "SELECT COUNT(*) FROM items WHERE md5=? AND trashed_at IS NULL",
                 params![md5],
                 |r: &Row| r.get(0),
             )
             .map_err(|e| e.to_string())?;
-        
+
         if md5_exists > 0 {
             return Ok(Status { ok: true, message: "Already downloaded (md5 match)".into() });
         }
     }
 
-    // Filename: primaryArtist_e621_<id>.<ext>
+    // Drop the dedup connection before downloading
+    drop(dedup_conn);
+
+    // ── Build filename ──
     let primary_artist = sanitize_slug(&pick_primary_artist(&post.tags.artist));
     let ext = post.file_ext.trim().to_lowercase();
-    
+
     if ext.is_empty() {
         return Err("Missing file_ext from e621".into());
     }
@@ -278,7 +280,6 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
     let mut filename = base.clone();
     let mut dest_path = media_dir.join(&filename);
 
-    // Ensure unique filename
     let mut n = 1;
     while dest_path.exists() {
         filename = format!("{primary_artist}_e621_{}_dup{}.{}", post.id, n, ext);
@@ -286,7 +287,7 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
         n += 1;
     }
 
-    // Temp download
+    // ── Download to temp file ──
     let tmp_dir = root.join(".cache").join("tmp");
     fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
     let tmp_path = tmp_dir.join(format!("{filename}.part"));
@@ -294,7 +295,7 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
     let client = reqwest::Client::new();
     let resp = client
         .get(&post.file_url)
-        .header("User-Agent", "TailBurrow/0.2.4 (local archiver)")
+        .header("User-Agent", "TailBurrow/0.3.0 (local archiver)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -310,52 +311,57 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
 
     fs::rename(&tmp_path, &dest_path).map_err(|e| e.to_string())?;
 
-    // --- NEW: Generate Thumbnail Immediately ---
-    let file_rel = format!("media/{}", filename.replace('\\', "/"));
-    generate_and_save_thumb(&root, &file_rel); // <--- Added this call
-    // -------------------------------------------
+    // ── DB insert (with cleanup on failure) ──
+    let cleanup_path = dest_path.clone();
+    let db_result = (|| -> Result<(), String> {
+        let file_rel = format!("media/{}", filename.replace('\\', "/"));
+        generate_and_save_thumb(&root, &file_rel);
 
-    let added_at = Utc::now().to_rfc3339();
+        let added_at = Utc::now().to_rfc3339();
 
-    // Open mutable connection for inserts
-    let mut conn = db::open(&library::db_path(&root))?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut conn = db::open(&library::db_path(&root))?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    tx.execute(
-        r#"
-        INSERT INTO items(source, source_id, md5, remote_url, file_rel, ext, rating, fav_count, score_total, created_at, added_at, primary_artist)
-        VALUES('e621', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-        params![
-            post.id.to_string(),
-            post.file_md5,
-            post.file_url,
-            file_rel,
-            ext,
-            post.rating,
-            post.fav_count,
-            post.score_total,
-            post.created_at,
-            added_at,
-            primary_artist
-        ],
-    ).map_err(|e| e.to_string())?;
-
-    let item_id = tx.last_insert_rowid();
-
-    // Typed tags
-    insert_tags_for_item(&tx, item_id, &post.tags)?;
-
-    // Source URLs
-    for u in &post.sources {
-        let sid = upsert_source(&tx, u)?;
         tx.execute(
-            "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?, ?)",
-            params![item_id, sid],
+            r#"
+            INSERT INTO items(source, source_id, md5, remote_url, file_rel, ext, rating, fav_count, score_total, created_at, added_at, primary_artist)
+            VALUES('e621', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+            params![
+                post.id.to_string(),
+                post.file_md5,
+                post.file_url,
+                file_rel,
+                ext,
+                post.rating,
+                post.fav_count,
+                post.score_total,
+                post.created_at,
+                added_at,
+                primary_artist
+            ],
         ).map_err(|e| e.to_string())?;
-    }
 
-    tx.commit().map_err(|e| e.to_string())?;
+        let item_id = tx.last_insert_rowid();
+
+        insert_tags_for_item(&tx, item_id, &post.tags)?;
+
+        for u in &post.sources {
+            let sid = upsert_source(&tx, u)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?, ?)",
+                params![item_id, sid],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+
+    if let Err(e) = db_result {
+        let _ = fs::remove_file(&cleanup_path);
+        return Err(e);
+    }
 
     Ok(Status { ok: true, message: "Downloaded into library".into() })
 }
@@ -428,7 +434,7 @@ pub async fn e621_test_connection() -> Result<Status, String> {
   let resp = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.2.4 (test)")
+    .header("User-Agent", "TailBurrow/0.3.0 (test)")
     .query(&[("limit", "1"), ("tags", "order:id_desc")])
     .send()
     .await
@@ -449,7 +455,7 @@ pub async fn e621_fetch_posts(tags: String, limit: u32, page: Option<String>) ->
   let mut req = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.2.4 (feeds)")
+    .header("User-Agent", "TailBurrow/0.3.0 (feeds)")
     .query(&[("tags", tags), ("limit", limit.to_string())]);
 
   if let Some(p) = page {
@@ -539,7 +545,7 @@ pub fn e621_sync_start(
         let resp = client
           .get("https://e621.net/posts.json")
           .basic_auth(&username, Some(&api_key))
-          .header("User-Agent", "TailBurrow/0.2.4 (sync)")
+          .header("User-Agent", "TailBurrow/0.3.0 (sync)")
           .query(&[
             ("tags", tags.as_str()),
             ("limit", "320"),
@@ -585,6 +591,23 @@ pub fn e621_sync_start(
           if post_id == 0 {
             continue;
           }
+
+          // ── Store pool associations from this post ──
+          if let Some(pools_arr) = p.get("pools").and_then(|v| v.as_array()) {
+              for pv in pools_arr {
+                  if let Some(pid) = pv.as_i64() {
+                      conn.execute(
+                          "INSERT OR IGNORE INTO post_pools(source_id, pool_id) VALUES(?,?)",
+                          params![post_id.to_string(), pid],
+                      ).ok();
+                  }
+              }
+          }
+          // Mark this post as pool-scanned regardless
+          conn.execute(
+              "INSERT OR IGNORE INTO pool_scan_log(source_id) VALUES(?)",
+              params![post_id.to_string()],
+          ).ok();
 
           // already downloaded check by (source,id)
           let exists: i64 = conn.query_row(
@@ -720,7 +743,7 @@ pub async fn e621_favorite(post_id: i64) -> Result<Status, String> {
   let resp = client
     .post("https://e621.net/favorites.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.2.4 (favorite)")
+    .header("User-Agent", "TailBurrow/0.3.0 (favorite)")
     .header("Content-Type", "application/x-www-form-urlencoded")
     .body(format!("post_id={}", post_id))
     .send()
@@ -847,40 +870,37 @@ pub fn restore_item(app: tauri::AppHandle, item_id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
     let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
 
-    let mut stmt = conn.prepare("SELECT file_rel FROM items WHERE trashed_at IS NOT NULL")
-        .map_err(|e| e.to_string())?;
-    
-    let files_to_delete: Vec<String> = stmt.query_map([], |row| row.get(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
-        .collect();
-
-    let cache_dir = root.join(".cache").join("thumbs");
-
-    // 2. Delete from Disk
-    for rel_path in files_to_delete {
-        // Delete Main File
-        let abs_path = root.join(&rel_path);
-        if abs_path.exists() {
-            let _ = std::fs::remove_file(abs_path);
-        }
-
-        // Delete Thumbnail
-        // Hash the relative path just like ensure_thumbnail does
-        let name_hash = format!("{:x}", md5::compute(rel_path.as_bytes()));
-        let thumb_path = cache_dir.join(format!("{}.jpg", name_hash));
+    with_db(&app, |conn| {
+        let mut stmt = conn.prepare("SELECT file_rel FROM items WHERE trashed_at IS NOT NULL")
+            .map_err(|e| e.to_string())?;
         
-        if thumb_path.exists() {
-            let _ = std::fs::remove_file(thumb_path);
+        let files_to_delete: Vec<String> = stmt.query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+
+        let cache_dir = root.join(".cache").join("thumbs");
+
+        for rel_path in &files_to_delete {
+            let abs_path = root.join(rel_path);
+            if abs_path.exists() {
+                let _ = std::fs::remove_file(abs_path);
+            }
+
+            let name_hash = format!("{:x}", md5::compute(rel_path.as_bytes()));
+            let thumb_path = cache_dir.join(format!("{}.jpg", name_hash));
+            
+            if thumb_path.exists() {
+                let _ = std::fs::remove_file(thumb_path);
+            }
         }
-    }
 
-    conn.execute("DELETE FROM items WHERE trashed_at IS NOT NULL", [])
-        .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM items WHERE trashed_at IS NOT NULL", [])
+            .map_err(|e| e.to_string())?;
 
-    Ok(())
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -920,43 +940,33 @@ pub fn clear_library_root(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn update_item_tags(app: tauri::AppHandle, item_id: i64, tags: Vec<String>) -> Result<(), String> {
-    let root = get_root(&app)?;
-    let mut conn = db::open(&library::db_path(&root))?;
-    
-    // Use a transaction to ensure all or nothing
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    with_db(&app, |conn| {
+        conn.execute("DELETE FROM item_tags WHERE item_id = ?", [item_id])
+            .map_err(|e| e.to_string())?;
 
-    // 1. Remove ALL existing tags for this item
-    tx.execute("DELETE FROM item_tags WHERE item_id = ?", [item_id])
-        .map_err(|e| e.to_string())?;
+        for tag in &tags {
+            let clean_tag = tag.trim().to_lowercase();
+            if clean_tag.is_empty() { continue; }
 
-    // 2. Add the new list
-    for tag in tags {
-        let clean_tag = tag.trim().to_lowercase();
-        if clean_tag.is_empty() { continue; }
+            conn.execute(
+                "INSERT OR IGNORE INTO tags (name, type) VALUES (?, 'general')",
+                [&clean_tag]
+            ).map_err(|e| e.to_string())?;
 
-        // Ensure tag exists in the 'tags' table (defaulting to 'general' type)
-        tx.execute(
-            "INSERT OR IGNORE INTO tags (name, type) VALUES (?, 'general')",
-            [&clean_tag]
-        ).map_err(|e| e.to_string())?;
+            let tag_id: i64 = conn.query_row(
+                "SELECT tag_id FROM tags WHERE name = ?",
+                [&clean_tag],
+                |row| row.get(0)
+            ).map_err(|e| e.to_string())?;
 
-        // Get the tag's ID
-        let tag_id: i64 = tx.query_row(
-            "SELECT tag_id FROM tags WHERE name = ?",
-            [&clean_tag],
-            |row| row.get(0)
-        ).map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO item_tags (item_id, tag_id) VALUES (?, ?)",
+                [item_id, tag_id]
+            ).map_err(|e| e.to_string())?;
+        }
 
-        // Link item to tag
-        tx.execute(
-            "INSERT INTO item_tags (item_id, tag_id) VALUES (?, ?)",
-            [item_id, tag_id]
-        ).map_err(|e| e.to_string())?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -998,39 +1008,31 @@ pub fn update_item_rating(app: tauri::AppHandle, item_id: i64, rating: String) -
 
 #[tauri::command]
 pub fn update_item_sources(app: tauri::AppHandle, item_id: i64, sources: Vec<String>) -> Result<(), String> {
-    let root = get_root(&app)?;
-    let mut conn = db::open(&library::db_path(&root))?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-    // 1. Unlink all existing sources for this item
-    tx.execute("DELETE FROM item_sources WHERE item_id = ?", [item_id])
-        .map_err(|e| e.to_string())?;
-
-    // 2. Add new sources
-    for url in sources {
-        let clean_url = url.trim();
-        if clean_url.is_empty() { continue; }
-
-        // Insert Source URL if new
-        tx.execute("INSERT OR IGNORE INTO sources (url) VALUES (?)", [clean_url])
+    with_db(&app, |conn| {
+        conn.execute("DELETE FROM item_sources WHERE item_id = ?", [item_id])
             .map_err(|e| e.to_string())?;
-        
-        // Get Source ID
-        let source_row_id: i64 = tx.query_row(
-            "SELECT source_row_id FROM sources WHERE url = ?", 
-            [clean_url], 
-            |r| r.get(0)
-        ).map_err(|e| e.to_string())?;
 
-        // Link
-        tx.execute(
-            "INSERT INTO item_sources (item_id, source_row_id) VALUES (?, ?)", 
-            [item_id, source_row_id]
-        ).map_err(|e| e.to_string())?;
-    }
+        for url in &sources {
+            let clean_url = url.trim();
+            if clean_url.is_empty() { continue; }
 
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+            conn.execute("INSERT OR IGNORE INTO sources (url) VALUES (?)", [clean_url])
+                .map_err(|e| e.to_string())?;
+            
+            let source_row_id: i64 = conn.query_row(
+                "SELECT source_row_id FROM sources WHERE url = ?", 
+                [clean_url], 
+                |r| r.get(0)
+            ).map_err(|e| e.to_string())?;
+
+            conn.execute(
+                "INSERT INTO item_sources (item_id, source_row_id) VALUES (?, ?)", 
+                [item_id, source_row_id]
+            ).map_err(|e| e.to_string())?;
+        }
+
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -1038,10 +1040,10 @@ pub fn list_items(
     app: tauri::AppHandle,
     limit: Option<u32>,
     offset: Option<u32>,
-    search: Option<String>, // Tag search only
-    rating: Option<String>, // 's', 'q', 'e', or 'nsfw'
-    source: Option<String>, // 'e621', 'furaffinity', or 'all'
-    order: Option<String>,  // 'newest', 'oldest', 'score', 'random'
+    search: Option<String>,
+    rating: Option<String>,
+    source: Option<String>,
+    order: Option<String>,
 ) -> Result<Vec<ItemDto>, String> {
     let limit = limit.unwrap_or(100);
     let offset = offset.unwrap_or(0);
@@ -1051,222 +1053,225 @@ pub fn list_items(
     let sort_order = order.unwrap_or("newest".to_string());
 
     let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
+    let dedup_conn = db::open(&library::db_path(&root))?;
+    db::init_schema(&dedup_conn)?;
 
     // Base SQL
-    let mut sql = String::from(
-        r#"
-        SELECT
-          i.item_id, i.source, i.source_id, i.remote_url, i.file_rel, i.ext,
-          i.rating, i.fav_count, i.score_total, i.created_at, i.added_at,
-          -- Fetch ALL tags with their types concatenated by '$$'
-          (SELECT GROUP_CONCAT(t.name || '$$' || t.type, char(9)) 
-           FROM item_tags it 
-           JOIN tags t ON it.tag_id = t.tag_id 
-           WHERE it.item_id = i.item_id),
-          (SELECT GROUP_CONCAT(s.url, char(9)) FROM item_sources isrc JOIN sources s ON isrc.source_row_id = s.source_row_id WHERE isrc.item_id = i.item_id)
-        FROM items i
-        WHERE i.trashed_at IS NULL
-        "#
-    );
+    with_db(&app, |conn| {
+      let mut sql = String::from(
+          r#"
+          SELECT
+            i.item_id, i.source, i.source_id, i.remote_url, i.file_rel, i.ext,
+            i.rating, i.fav_count, i.score_total, i.created_at, i.added_at,
+            -- Fetch ALL tags with their types concatenated by '$$'
+            (SELECT GROUP_CONCAT(t.name || '$$' || t.type, char(9)) 
+            FROM item_tags it 
+            JOIN tags t ON it.tag_id = t.tag_id 
+            WHERE it.item_id = i.item_id),
+            (SELECT GROUP_CONCAT(s.url, char(9)) FROM item_sources isrc JOIN sources s ON isrc.source_row_id = s.source_row_id WHERE isrc.item_id = i.item_id)
+          FROM items i
+          WHERE i.trashed_at IS NULL
+          "#
+      );
 
-    let mut params_store: Vec<String> = vec![]; 
-    let mut where_clauses: Vec<String> = vec![];
+      let mut params_store: Vec<String> = vec![]; 
+      let mut where_clauses: Vec<String> = vec![];
 
-    // --- 1. RATING FILTER ---
-    if rating_filter != "all" {
-        if rating_filter == "nsfw" {
-            where_clauses.push("(i.rating = 'q' OR i.rating = 'e')".to_string());
-        } else {
-            params_store.push(rating_filter);
-            where_clauses.push(format!("i.rating = ?{}", params_store.len()));
+      // --- 1. RATING FILTER ---
+      if rating_filter != "all" {
+          if rating_filter == "nsfw" {
+              where_clauses.push("(i.rating = 'q' OR i.rating = 'e')".to_string());
+          } else {
+              params_store.push(rating_filter);
+              where_clauses.push(format!("i.rating = ?{}", params_store.len()));
+          }
+      }
+
+      // --- 2. SOURCE FILTER ---
+      if source_filter != "all" {
+          params_store.push(source_filter);
+          where_clauses.push(format!("i.source = ?{}", params_store.len()));
+      }
+
+      // --- 3. TAG SEARCH ---
+      let terms: Vec<&str> = search_query.split_whitespace().collect();
+      for term in terms {
+          // --- 1. NEGATED TYPE (-type:image) ---
+          if term.starts_with("-type:") {
+              let val = term.replace("-type:", "").to_lowercase();
+              match val.as_str() {
+                  "image" | "img" => where_clauses.push("NOT (i.ext IN ('jpg', 'jpeg', 'png', 'webp'))".to_string()),
+                  "video" | "vid" => where_clauses.push("NOT (i.ext IN ('mp4', 'webm'))".to_string()),
+                  "gif" => where_clauses.push("i.ext != 'gif'".to_string()),
+                  _ => {}
+              }
+          }
+          // --- 2. POSITIVE TYPE (type:video) ---
+          else if term.starts_with("type:") {
+              let val = term.replace("type:", "").to_lowercase();
+              match val.as_str() {
+                  "image" | "img" => where_clauses.push("(i.ext IN ('jpg', 'jpeg', 'png', 'webp'))".to_string()),
+                  "video" | "vid" => where_clauses.push("(i.ext IN ('mp4', 'webm'))".to_string()),
+                  "gif" => where_clauses.push("(i.ext = 'gif')".to_string()),
+                  _ => {}
+              }
+          }
+          // --- 3. NEGATED EXTENSION (-ext:png) ---
+          else if term.starts_with("-ext:") {
+              let val = term.replace("-ext:", "").to_lowercase();
+              params_store.push(val);
+              where_clauses.push(format!("i.ext != ?{}", params_store.len()));
+          }
+          // --- 4. POSITIVE EXTENSION (ext:png) ---
+          else if term.starts_with("ext:") {
+              let val = term.replace("ext:", "").to_lowercase();
+              params_store.push(val);
+              where_clauses.push(format!("i.ext = ?{}", params_store.len()));
+          }
+          // --- 5. META TAGS (rating, source, order - ignored here, handled by params) ---
+          // We skip these so they don't get treated as generic tags
+          else if term.starts_with("rating:") {
+              let val = term.replace("rating:", "").to_lowercase();
+              // Map common aliases
+              let r = match val.as_str() {
+                  "safe" | "s" => "s",
+                  "questionable" | "q" => "q",
+                  "explicit" | "e" => "e",
+                  _ => "s"
+              };
+              params_store.push(r.to_string());
+              where_clauses.push(format!("i.rating = ?{}", params_store.len()));
+          }
+          else if term.starts_with("-rating:") {
+              let val = term.replace("-rating:", "").to_lowercase();
+              let r = match val.as_str() {
+                  "safe" | "s" => "s",
+                  "questionable" | "q" => "q",
+                  "explicit" | "e" => "e",
+                  _ => "s"
+              };
+              params_store.push(r.to_string());
+              where_clauses.push(format!("i.rating != ?{}", params_store.len()));
+          }
+          else if term.starts_with("source:") || term.starts_with("order:") {
+              continue;
+          }
+          // --- 6. NEGATED TAG (-tag) ---
+          else if term.starts_with("-") {
+              let tag = term.trim_start_matches("-").to_lowercase();
+              params_store.push(tag);
+              where_clauses.push(format!(
+                  "NOT EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id AND t.name = ?{})", 
+                  params_store.len()
+              ));
+          }
+          // --- 7. REGULAR TAG (tag) ---
+          else {
+              let tag = term.to_lowercase();
+              if tag.contains("*") {
+                  let like_tag = tag.replace("*", "%");
+                  params_store.push(like_tag);
+                  where_clauses.push(format!(
+                      "EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id AND t.name LIKE ?{})", 
+                      params_store.len()
+                  ));
+              } else {
+                  params_store.push(tag);
+                  where_clauses.push(format!(
+                      "EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id AND t.name = ?{})", 
+                      params_store.len()
+                  ));
+              }
+          }
+          
+      }
+
+      // --- APPLY WHERE ---
+      if !where_clauses.is_empty() {
+          sql.push_str(" AND ");
+          sql.push_str(&where_clauses.join(" AND "));
+      }
+
+      // --- 4. ORDERING ---
+      let order_clause = match sort_order.as_str() {
+          "score" => "ORDER BY i.score_total DESC",
+          "favs" | "favcount" => "ORDER BY i.fav_count DESC",
+          "random" => "ORDER BY RANDOM()",
+          "oldest" => "ORDER BY i.added_at ASC",
+          _ => "ORDER BY i.added_at DESC", // Default 'newest'
+      };
+
+      sql.push_str(&format!(" {} LIMIT {} OFFSET {}", order_clause, limit, offset));
+
+      // Prepare & Execute
+      let db_params: Vec<&dyn rusqlite::ToSql> = params_store.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+      let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+      let rows = stmt.query_map(&*db_params, |r| {
+          let file_rel: String = r.get(4)?;
+          let file_abs = root.join(&file_rel);
+          
+          // Parse the raw tag string "name$$type\tname2$$type2"
+          let raw_tags: Option<String> = r.get(11)?;
+          let mut t_gen = vec![];
+          let mut t_art = vec![];
+          let mut t_cop = vec![];
+          let mut t_cha = vec![];
+          let mut t_spe = vec![];
+          let mut t_met = vec![];
+          let mut t_lor = vec![];
+
+          if let Some(s) = raw_tags {
+              for entry in s.split('\t') {
+                  if let Some((name, type_)) = entry.split_once("$$") {
+                      let n = name.to_string();
+                      match type_ {
+                          "artist" => t_art.push(n),
+                          "copyright" => t_cop.push(n),
+                          "character" => t_cha.push(n),
+                          "species" => t_spe.push(n),
+                          "meta" => t_met.push(n),
+                          "lore" => t_lor.push(n),
+                          _ => t_gen.push(n),
+                      }
+                  }
+              }
+          }
+
+          let split_tab = |s: String| -> Vec<String> {
+              if s.is_empty() { vec![] } else { s.split('\t').map(|x| x.to_string()).collect() }
+          };
+
+          Ok(ItemDto {
+              item_id: r.get(0)?,
+              source: r.get(1)?,
+              source_id: r.get(2)?,
+              remote_url: r.get(3)?,
+              file_rel: file_rel,
+              file_abs: file_abs.to_string_lossy().to_string(),
+              ext: r.get(5)?,
+              rating: r.get(6)?,
+              fav_count: r.get(7)?,
+              score_total: r.get(8)?,
+              timestamp: r.get(9)?,
+              added_at: r.get(10)?,
+              tags_general: t_gen,
+              tags_artist: t_art,
+              tags_copyright: t_cop,
+              tags_character: t_cha,
+              tags_species: t_spe,
+              tags_meta: t_met,
+              tags_lore: t_lor,
+              sources: split_tab(r.get(12).unwrap_or_default()),
+          })
+      }).map_err(|e| e.to_string())?;
+
+        let mut out = vec![];
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
         }
-    }
-
-    // --- 2. SOURCE FILTER ---
-    if source_filter != "all" {
-        params_store.push(source_filter);
-        where_clauses.push(format!("i.source = ?{}", params_store.len()));
-    }
-
-    // --- 3. TAG SEARCH ---
-    let terms: Vec<&str> = search_query.split_whitespace().collect();
-    for term in terms {
-        // --- 1. NEGATED TYPE (-type:image) ---
-        if term.starts_with("-type:") {
-            let val = term.replace("-type:", "").to_lowercase();
-            match val.as_str() {
-                "image" | "img" => where_clauses.push("NOT (i.ext IN ('jpg', 'jpeg', 'png', 'webp'))".to_string()),
-                "video" | "vid" => where_clauses.push("NOT (i.ext IN ('mp4', 'webm'))".to_string()),
-                "gif" => where_clauses.push("i.ext != 'gif'".to_string()),
-                _ => {}
-            }
-        }
-        // --- 2. POSITIVE TYPE (type:video) ---
-        else if term.starts_with("type:") {
-            let val = term.replace("type:", "").to_lowercase();
-            match val.as_str() {
-                "image" | "img" => where_clauses.push("(i.ext IN ('jpg', 'jpeg', 'png', 'webp'))".to_string()),
-                "video" | "vid" => where_clauses.push("(i.ext IN ('mp4', 'webm'))".to_string()),
-                "gif" => where_clauses.push("(i.ext = 'gif')".to_string()),
-                _ => {}
-            }
-        }
-        // --- 3. NEGATED EXTENSION (-ext:png) ---
-        else if term.starts_with("-ext:") {
-            let val = term.replace("-ext:", "").to_lowercase();
-            params_store.push(val);
-            where_clauses.push(format!("i.ext != ?{}", params_store.len()));
-        }
-        // --- 4. POSITIVE EXTENSION (ext:png) ---
-        else if term.starts_with("ext:") {
-            let val = term.replace("ext:", "").to_lowercase();
-            params_store.push(val);
-            where_clauses.push(format!("i.ext = ?{}", params_store.len()));
-        }
-        // --- 5. META TAGS (rating, source, order - ignored here, handled by params) ---
-        // We skip these so they don't get treated as generic tags
-        else if term.starts_with("rating:") {
-            let val = term.replace("rating:", "").to_lowercase();
-            // Map common aliases
-            let r = match val.as_str() {
-                "safe" | "s" => "s",
-                "questionable" | "q" => "q",
-                "explicit" | "e" => "e",
-                _ => "s"
-            };
-            params_store.push(r.to_string());
-            where_clauses.push(format!("i.rating = ?{}", params_store.len()));
-        }
-        else if term.starts_with("-rating:") {
-            let val = term.replace("-rating:", "").to_lowercase();
-            let r = match val.as_str() {
-                "safe" | "s" => "s",
-                "questionable" | "q" => "q",
-                "explicit" | "e" => "e",
-                _ => "s"
-            };
-            params_store.push(r.to_string());
-            where_clauses.push(format!("i.rating != ?{}", params_store.len()));
-        }
-        else if term.starts_with("source:") || term.starts_with("order:") {
-            continue;
-        }
-        // --- 6. NEGATED TAG (-tag) ---
-        else if term.starts_with("-") {
-            let tag = term.trim_start_matches("-").to_lowercase();
-            params_store.push(tag);
-            where_clauses.push(format!(
-                "NOT EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id AND t.name = ?{})", 
-                params_store.len()
-            ));
-        }
-        // --- 7. REGULAR TAG (tag) ---
-        else {
-            let tag = term.to_lowercase();
-            if tag.contains("*") {
-                let like_tag = tag.replace("*", "%");
-                params_store.push(like_tag);
-                where_clauses.push(format!(
-                    "EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id AND t.name LIKE ?{})", 
-                    params_store.len()
-                ));
-            } else {
-                params_store.push(tag);
-                where_clauses.push(format!(
-                    "EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON it.tag_id = t.tag_id WHERE it.item_id = i.item_id AND t.name = ?{})", 
-                    params_store.len()
-                ));
-            }
-        }
-        
-    }
-
-    // --- APPLY WHERE ---
-    if !where_clauses.is_empty() {
-        sql.push_str(" AND ");
-        sql.push_str(&where_clauses.join(" AND "));
-    }
-
-    // --- 4. ORDERING ---
-    let order_clause = match sort_order.as_str() {
-        "score" => "ORDER BY i.score_total DESC",
-        "favs" | "favcount" => "ORDER BY i.fav_count DESC",
-        "random" => "ORDER BY RANDOM()",
-        "oldest" => "ORDER BY i.added_at ASC",
-        _ => "ORDER BY i.added_at DESC", // Default 'newest'
-    };
-
-    sql.push_str(&format!(" {} LIMIT {} OFFSET {}", order_clause, limit, offset));
-
-    // Prepare & Execute
-    let db_params: Vec<&dyn rusqlite::ToSql> = params_store.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-
-    let rows = stmt.query_map(&*db_params, |r| {
-        let file_rel: String = r.get(4)?;
-        let file_abs = root.join(&file_rel);
-        
-        // Parse the raw tag string "name$$type\tname2$$type2"
-        let raw_tags: Option<String> = r.get(11)?;
-        let mut t_gen = vec![];
-        let mut t_art = vec![];
-        let mut t_cop = vec![];
-        let mut t_cha = vec![];
-        let mut t_spe = vec![];
-        let mut t_met = vec![];
-        let mut t_lor = vec![];
-
-        if let Some(s) = raw_tags {
-            for entry in s.split('\t') {
-                if let Some((name, type_)) = entry.split_once("$$") {
-                    let n = name.to_string();
-                    match type_ {
-                        "artist" => t_art.push(n),
-                        "copyright" => t_cop.push(n),
-                        "character" => t_cha.push(n),
-                        "species" => t_spe.push(n),
-                        "meta" => t_met.push(n),
-                        "lore" => t_lor.push(n),
-                        _ => t_gen.push(n),
-                    }
-                }
-            }
-        }
-
-        let split_tab = |s: String| -> Vec<String> {
-            if s.is_empty() { vec![] } else { s.split('\t').map(|x| x.to_string()).collect() }
-        };
-
-        Ok(ItemDto {
-            item_id: r.get(0)?,
-            source: r.get(1)?,
-            source_id: r.get(2)?,
-            remote_url: r.get(3)?,
-            file_rel: file_rel,
-            file_abs: file_abs.to_string_lossy().to_string(),
-            ext: r.get(5)?,
-            rating: r.get(6)?,
-            fav_count: r.get(7)?,
-            score_total: r.get(8)?,
-            timestamp: r.get(9)?,
-            added_at: r.get(10)?,
-            tags_general: t_gen,
-            tags_artist: t_art,
-            tags_copyright: t_cop,
-            tags_character: t_cha,
-            tags_species: t_spe,
-            tags_meta: t_met,
-            tags_lore: t_lor,
-            sources: split_tab(r.get(12).unwrap_or_default()),
-        })
-    }).map_err(|e| e.to_string())?;
-
-    let mut out = vec![];
-    for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
+        Ok(out)
+    })
 }
 
 // Add this helper function
@@ -1341,6 +1346,41 @@ pub async fn ensure_thumbnail(app: tauri::AppHandle, file_rel: String) -> Result
         
         Ok(thumb_path.to_string_lossy().to_string())
     }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn proxy_remote_media(app: AppHandle, url: String) -> Result<String, String> {
+    let root = get_root(&app)?;
+    let cache_dir = root.join(".cache").join("remote_media");
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+
+    let url_hash = format!("{:x}", md5::compute(url.as_bytes()));
+    let ext = url.rsplit('.')
+        .next()
+        .and_then(|e| if e.len() <= 5 && e.chars().all(|c| c.is_alphanumeric()) { Some(e) } else { None })
+        .unwrap_or("bin");
+    let cached_path = cache_dir.join(format!("{}.{}", url_hash, ext));
+
+    if cached_path.exists() {
+        return Ok(cached_path.to_string_lossy().to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "TailBurrow/0.3.0 (media proxy)")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Failed to fetch media: HTTP {}", resp.status()));
+    }
+
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    fs::write(&cached_path, &bytes).map_err(|e| e.to_string())?;
+
+    Ok(cached_path.to_string_lossy().to_string())
 }
 
 fn insert_tags_for_item(conn: &Connection, item_id: i64, tags: &E621Tags) -> Result<(), String> {
@@ -1420,32 +1460,38 @@ pub fn auto_clean_trash(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-pub fn get_all_e621_ids(app: AppHandle) -> Result<Vec<i64>, String> {
-    let root = get_root(&app)?;
-    let conn = db::open(&library::db_path(&root))?;
-    
-    let mut stmt = conn.prepare(
-        "SELECT source_id FROM items WHERE source = 'e621' AND trashed_at IS NULL"
-    ).map_err(|e| e.to_string())?;
+pub fn get_unscanned_e621_ids(app: AppHandle) -> Result<Vec<i64>, String> {
+    with_db(&app, |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT i.source_id FROM items i
+             WHERE i.source = 'e621' AND i.trashed_at IS NULL
+               AND i.source_id NOT IN (SELECT source_id FROM pool_scan_log)"
+        ).map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map([], |row| {
-        let id_str: String = row.get(0)?;
-        Ok(id_str.parse::<i64>().unwrap_or(0))
-    }).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            let s: String = row.get(0)?;
+            Ok(s.parse::<i64>().unwrap_or(0))
+        }).map_err(|e| e.to_string())?;
 
-    let mut ids = Vec::new();
-    for row in rows {
-        if let Ok(id) = row {
-            if id > 0 {
-                ids.push(id);
-            }
-        }
-    }
-    Ok(ids)
+        Ok(rows.filter_map(|r| r.ok()).filter(|id| *id > 0).collect())
+    })
 }
 
 #[tauri::command]
-pub async fn check_posts_for_pools(ids: Vec<i64>) -> Result<Vec<i64>, String> {
+pub fn get_known_pool_ids(app: AppHandle) -> Result<Vec<i64>, String> {
+    with_db(&app, |conn| {
+        let mut stmt = conn.prepare("SELECT DISTINCT pool_id FROM post_pools")
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    })
+}
+
+#[tauri::command]
+pub async fn check_posts_for_pools(app: AppHandle, ids: Vec<i64>) -> Result<Vec<i64>, String> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
@@ -1453,12 +1499,12 @@ pub async fn check_posts_for_pools(ids: Vec<i64>) -> Result<Vec<i64>, String> {
     let (username, api_key) = load_e621_creds()?;
     let client = reqwest::Client::new();
     let ids_param = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-    
+
     let resp = client
         .get("https://e621.net/posts.json")
         .basic_auth(&username, Some(&api_key))
-        .header("User-Agent", "TailBurrow/0.2.4 (pools)")
-        .query(&[("tags", format!("id:{}", ids_param)), ("limit", "100".to_string())])
+        .header("User-Agent", "TailBurrow/0.3.0 (pools)")
+        .query(&[("tags", format!("id:{}", ids_param)), ("limit", "320".to_string())])
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1469,104 +1515,153 @@ pub async fn check_posts_for_pools(ids: Vec<i64>) -> Result<Vec<i64>, String> {
 
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     let posts = json.get("posts").and_then(|p| p.as_array()).cloned().unwrap_or_default();
-    
+
     let mut pool_ids = std::collections::HashSet::new();
 
-    for post in posts {
+    // ── Persist results in DB ──
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+
+    for post in &posts {
+        let post_id = post.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+        if post_id == 0 { continue; }
+
         if let Some(pools) = post.get("pools").and_then(|p| p.as_array()) {
-            for pool_val in pools {
-                if let Some(pool_id) = pool_val.as_i64() {
-                    pool_ids.insert(pool_id);
+            for pv in pools {
+                if let Some(pid) = pv.as_i64() {
+                    pool_ids.insert(pid);
+                    if let Err(e) = conn.execute(
+                        "INSERT OR IGNORE INTO post_pools(source_id, pool_id) VALUES(?,?)",
+                        params![post_id.to_string(), pid],
+                    ) {
+                        eprintln!("[warn] failed to insert post_pool ({}, {}): {}", post_id, pid, e);
+                    }
                 }
             }
         }
+        if let Err(e) = conn.execute(
+            "INSERT OR IGNORE INTO pool_scan_log(source_id) VALUES(?)",
+            params![post_id.to_string()],
+        ) {
+            eprintln!("[warn] failed to insert pool_scan_log ({}): {}", post_id, e);
+        }
     }
 
-    // Rate limit 500ms
+    // Mark ALL requested IDs as scanned (even those not returned / with no pools)
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     Ok(pool_ids.into_iter().collect())
 }
 
 #[tauri::command]
-pub async fn fetch_pool_info(app: AppHandle, pool_id: i64) -> Result<Option<PoolInfo>, String> {
+pub async fn fetch_pool_infos_batch(_app: AppHandle, pool_ids: Vec<i64>) -> Result<Vec<PoolInfo>, String> {
+    if pool_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
     let (username, api_key) = load_e621_creds()?;
-    let root = get_root(&app)?;
-    
     let client = reqwest::Client::new();
-    
-    let resp = client
-        .get(format!("https://e621.net/pools/{}.json", pool_id))
-        .basic_auth(&username, Some(&api_key))
-        .header("User-Agent", "TailBurrow/0.2.4 (pools)")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
 
-    if !resp.status().is_success() {
-        return Ok(None);
-    }
+    let mut result: Vec<PoolInfo> = vec![];
 
-    let pool_json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    
-    let name = pool_json.get("name").and_then(|n| n.as_str()).unwrap_or("Unknown").replace("_", " ");
-    let post_ids = pool_json.get("post_ids").and_then(|p| p.as_array()).cloned().unwrap_or_default();
-    let post_count = post_ids.len() as i32;
-    
-    let first_post_id = post_ids.first().and_then(|p| p.as_i64()).unwrap_or(0);
-    
-    if first_post_id == 0 {
-        return Ok(None);
-    }
+    for chunk in pool_ids.chunks(20) {
+        let ids_str = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
 
-    // Check if we have this post locally
-    let local_cover: Option<(String, String)> = {
-        if let Ok(conn) = db::open(&library::db_path(&root)) {
-            conn.query_row(
-                "SELECT file_rel, ext FROM items WHERE source = 'e621' AND source_id = ? AND trashed_at IS NULL",
-                params![first_post_id.to_string()],
-                |row| Ok((row.get(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
-            ).ok()
-        } else {
-            None
-        }
-    };
-
-    let (cover_url, cover_ext) = if let Some((file_rel, ext)) = local_cover {
-        (root.join(&file_rel).to_string_lossy().to_string(), ext)
-    } else {
-        // Fetch from e621
-        let post_resp = client
-            .get(format!("https://e621.net/posts/{}.json", first_post_id))
+        // 1. Fetch pool metadata
+        let resp = client
+            .get("https://e621.net/pools.json")
             .basic_auth(&username, Some(&api_key))
-            .header("User-Agent", "TailBurrow/0.2.4 (pools)")
+            .header("User-Agent", "TailBurrow/0.3.0 (pools)")
+            .query(&[("search[id]", ids_str.as_str()), ("limit", "20")])
             .send()
-            .await;
+            .await
+            .map_err(|e| e.to_string())?;
 
-        if let Ok(post_resp) = post_resp {
-            if let Ok(post_json) = post_resp.json::<serde_json::Value>().await {
-                let post = post_json.get("post").unwrap_or(&post_json);
-                let sample_url = post.get("sample").and_then(|s| s.get("url")).and_then(|u| u.as_str()).unwrap_or("");
-                let ext = post.get("file").and_then(|f| f.get("ext")).and_then(|e| e.as_str()).unwrap_or("jpg");
-                (sample_url.to_string(), ext.to_string())
-            } else {
-                (String::new(), String::new())
-            }
-        } else {
-            (String::new(), String::new())
+        if !resp.status().is_success() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            continue;
         }
-    };
 
-    // Rate limit
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        let pools_json: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
 
-    Ok(Some(PoolInfo {
-        pool_id,
-        name,
-        post_count,
-        cover_url,
-        cover_ext,
-    }))
+        let mut batch_pools: Vec<PoolInfo> = Vec::new();
+        let mut need_remote: Vec<(usize, i64)> = Vec::new();
+
+        for pj in &pools_json {
+            let pool_id = pj.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+            let name = pj.get("name").and_then(|n| n.as_str()).unwrap_or("Unknown").replace('_', " ");
+            let post_ids_arr = pj.get("post_ids").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+            let post_count = post_ids_arr.len() as i32;
+
+                        let cover_url = String::new();
+            let cover_ext = String::new();
+
+            let idx = batch_pools.len();
+
+            // Always fetch cover from e621 API
+            if let Some(first_id) = post_ids_arr.first().and_then(|v| v.as_i64()).filter(|id| *id > 0) {
+                need_remote.push((idx, first_id));
+            }
+
+            batch_pools.push(PoolInfo { pool_id, name, post_count, cover_url, cover_ext });
+        }
+
+        // 2. Batch-fetch remote covers
+        if !need_remote.is_empty() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+            let cover_ids = need_remote.iter().map(|(_, pid)| pid.to_string()).collect::<Vec<_>>().join(",");
+
+            let cover_resp = client
+                .get("https://e621.net/posts.json")
+                .basic_auth(&username, Some(&api_key))
+                .header("User-Agent", "TailBurrow/0.3.0 (pools)")
+                .query(&[("tags", format!("id:{}", cover_ids)), ("limit", "320".to_string())])
+                .send()
+                .await;
+
+            if let Ok(resp) = cover_resp {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let posts = json.get("posts").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+
+                    let post_map: std::collections::HashMap<i64, &serde_json::Value> = posts.iter()
+                        .filter_map(|p| p.get("id").and_then(|i| i.as_i64()).map(|id| (id, p)))
+                        .collect();
+
+                    for (pool_idx, post_id) in &need_remote {
+                        if let Some(post) = post_map.get(post_id) {
+                            let file_ext = post.get("file").and_then(|f| f.get("ext")).and_then(|e| e.as_str()).unwrap_or("jpg");
+                            let is_video = file_ext == "mp4" || file_ext == "webm";
+
+                            let (url, cover_ext) = if is_video {
+                                // For video posts, always use preview image as cover
+                                let u = post.get("preview").and_then(|p| p.get("url")).and_then(|u| u.as_str())
+                                    .or_else(|| post.get("sample").and_then(|s| s.get("url")).and_then(|u| u.as_str()))
+                                    .unwrap_or("");
+                                (u, "jpg")
+                            } else {
+                                let u = post.get("sample").and_then(|s| s.get("url")).and_then(|u| u.as_str())
+                                    .or_else(|| post.get("preview").and_then(|p| p.get("url")).and_then(|u| u.as_str()))
+                                    .or_else(|| post.get("file").and_then(|f| f.get("url")).and_then(|u| u.as_str()))
+                                    .unwrap_or("");
+                                (u, file_ext)
+                            };
+
+                            if !url.is_empty() {
+                                batch_pools[*pool_idx].cover_url = url.to_string();
+                                batch_pools[*pool_idx].cover_ext = cover_ext.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result.extend(batch_pools);
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1635,10 +1730,20 @@ pub async fn get_pool_posts(app: AppHandle, pool_id: i64) -> Result<Vec<PoolPost
                     let remote_posts = json.get("posts").and_then(|p| p.as_array()).cloned().unwrap_or_default();
                     for rp in remote_posts {
                         let id = rp.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-                        let url = rp.get("sample").and_then(|s| s.get("url"))
-                            .or_else(|| rp.get("file").and_then(|f| f.get("url")))
-                            .and_then(|u| u.as_str()).unwrap_or("").to_string();
                         let ext = rp.get("file").and_then(|f| f.get("ext")).and_then(|e| e.as_str()).unwrap_or("jpg").to_string();
+                        let is_video = ext == "mp4" || ext == "webm";
+
+                        let url = if is_video {
+                            // For videos, prefer file URL (sample may be null)
+                            rp.get("file").and_then(|f| f.get("url")).and_then(|u| u.as_str())
+                                .or_else(|| rp.get("sample").and_then(|s| s.get("url")).and_then(|u| u.as_str()))
+                                .unwrap_or("").to_string()
+                        } else {
+                            rp.get("sample").and_then(|s| s.get("url")).and_then(|u| u.as_str())
+                                .or_else(|| rp.get("file").and_then(|f| f.get("url")).and_then(|u| u.as_str()))
+                                .or_else(|| rp.get("preview").and_then(|p| p.get("url")).and_then(|u| u.as_str()))
+                                .unwrap_or("").to_string()
+                        };
                         
                         if id > 0 && !url.is_empty() {
                             remote_map.insert(id, (url, ext));
@@ -1719,6 +1824,28 @@ pub fn clear_pools_cache(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn hash_pin(pin: &str, prefix: &str) -> String {
+    let salt: [u8; 16] = rand::random();
+    let salted = format!("{}:{}:{}", prefix, hex::encode(salt), pin);
+    let hash = Sha256::digest(salted.as_bytes());
+    format!("{}${}", hex::encode(salt), hex::encode(hash))
+}
+
+fn verify_pin_hash(pin: &str, prefix: &str, stored: &str) -> bool {
+    // Support legacy MD5 hashes during migration
+    if !stored.contains('$') {
+        let legacy_salted = format!("{}_{}", prefix, pin);
+        let legacy_hash = format!("{:x}", md5::compute(legacy_salted.as_bytes()));
+        return legacy_hash == stored;
+    }
+
+    let parts: Vec<&str> = stored.splitn(2, '$').collect();
+    if parts.len() != 2 { return false; }
+    let salted = format!("{}:{}:{}", prefix, parts[0], pin);
+    let hash = Sha256::digest(salted.as_bytes());
+    format!("{}${}", parts[0], hex::encode(hash)) == stored
+}
+
 #[tauri::command]
 pub fn has_app_lock() -> Result<bool, String> {
     Ok(crate::secrets::get_secret("app_lock_hash")?.is_some())
@@ -1730,8 +1857,7 @@ pub fn set_app_lock(pin: String) -> Result<(), String> {
     if pin.len() < 4 {
         return Err("PIN must be at least 4 characters".into());
     }
-    let salted = format!("tailburrow_lock_{}", pin);
-    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    let hash = hash_pin(pin, "tailburrow_lock");
     crate::secrets::set_secret("app_lock_hash", &hash)?;
     Ok(())
 }
@@ -1740,21 +1866,16 @@ pub fn set_app_lock(pin: String) -> Result<(), String> {
 pub fn verify_app_lock(pin: String) -> Result<bool, String> {
     let stored = match crate::secrets::get_secret("app_lock_hash")? {
         Some(h) => h,
-        None => return Ok(true), // No lock set, always pass
+        None => return Ok(true),
     };
-    let salted = format!("tailburrow_lock_{}", pin.trim());
-    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
-    Ok(hash == stored)
+    Ok(verify_pin_hash(pin.trim(), "tailburrow_lock", &stored))
 }
 
 #[tauri::command]
 pub fn clear_app_lock(pin: String) -> Result<(), String> {
-    // Verify current PIN before clearing
     let stored = crate::secrets::get_secret("app_lock_hash")?
         .ok_or("No lock configured")?;
-    let salted = format!("tailburrow_lock_{}", pin.trim());
-    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
-    if hash != stored {
+    if !verify_pin_hash(pin.trim(), "tailburrow_lock", &stored) {
         return Err("Incorrect PIN".into());
     }
     crate::secrets::delete_secret("app_lock_hash")?;
@@ -1767,8 +1888,7 @@ pub fn set_safe_pin(pin: String) -> Result<(), String> {
     if pin.len() < 4 {
         return Err("PIN must be at least 4 characters".into());
     }
-    let salted = format!("tailburrow_safe_{}", pin);
-    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
+    let hash = hash_pin(pin, "tailburrow_safe");
     crate::secrets::set_secret("app_safe_hash", &hash)?;
     Ok(())
 }
@@ -1784,18 +1904,14 @@ pub fn verify_safe_pin(pin: String) -> Result<bool, String> {
         Some(h) => h,
         None => return Ok(false),
     };
-    let salted = format!("tailburrow_safe_{}", pin.trim());
-    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
-    Ok(hash == stored)
+    Ok(verify_pin_hash(pin.trim(), "tailburrow_safe", &stored))
 }
 
 #[tauri::command]
 pub fn clear_safe_pin(pin: String) -> Result<(), String> {
     let stored = crate::secrets::get_secret("app_safe_hash")?
         .ok_or("No safe PIN configured")?;
-    let salted = format!("tailburrow_safe_{}", pin.trim());
-    let hash = format!("{:x}", md5::compute(salted.as_bytes()));
-    if hash != stored {
+    if !verify_pin_hash(pin.trim(), "tailburrow_safe", &stored) {
         return Err("Incorrect PIN".into());
     }
     crate::secrets::delete_secret("app_safe_hash")?;

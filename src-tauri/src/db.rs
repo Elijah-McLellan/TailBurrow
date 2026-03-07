@@ -107,6 +107,20 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
       conn.execute("CREATE INDEX IF NOT EXISTS idx_items_md5 ON items(file_md5)", []).map_err(|e| e.to_string())?;
   }
 
+  conn.execute_batch(
+      "
+      CREATE TABLE IF NOT EXISTS post_pools (
+          source_id TEXT NOT NULL,
+          pool_id   INTEGER NOT NULL,
+          PRIMARY KEY (source_id, pool_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS pool_scan_log (
+          source_id TEXT PRIMARY KEY
+      );
+      "
+  ).map_err(|e| e.to_string())?;
+
   Ok(())
 }
 
