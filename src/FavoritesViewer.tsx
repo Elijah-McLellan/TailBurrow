@@ -791,6 +791,8 @@ export default function FavoritesViewer() {
   const [isSlideshow, setIsSlideshow] = useState(false);
   const [slideshowSpeed, setSlideshowSpeed] = useState(5000);
   const [autoMuteVideos, setAutoMuteVideos] = useState(false);
+  const [globalMute, setGlobalMute] = useState(true);
+
   const [waitForVideoEnd, setWaitForVideoEnd] = useState(true);
 
   // Feeds
@@ -1484,11 +1486,11 @@ if (loadingFeedsRef.current[feedId]) return;
   const handleUnlock = useCallback(async () => {
     setPinError('');
     try {
-      // Check safe PIN first
       const isSafe = await invoke<boolean>("verify_safe_pin", { pin: pinInput });
       if (isSafe) {
         setSafeMode(true);
         setIsLocked(false);
+        setGlobalMute(false);
         setPinInput('');
         return;
       }
@@ -1497,6 +1499,7 @@ if (loadingFeedsRef.current[feedId]) return;
       if (ok) {
         setSafeMode(false);
         setIsLocked(false);
+        setGlobalMute(false);
         setPinInput('');
       } else {
         setPinError('Incorrect PIN');
@@ -1733,6 +1736,7 @@ if (loadingFeedsRef.current[feedId]) return;
         e.preventDefault();
         if (hasLock) {
           setIsLocked(true);
+          setGlobalMute(true);
           setSafeMode(false);
           setPinInput('');
           setPinError('');
@@ -1786,6 +1790,7 @@ if (loadingFeedsRef.current[feedId]) return;
     const handleVisibility = () => {
       if (document.visibilityState === 'hidden') {
         setIsLocked(true);
+        setGlobalMute(true);
         setSafeMode(false);
         setPinInput('');
         setPinError('');
@@ -2181,10 +2186,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                               controls
                               autoPlay
                               loop={!waitForVideoEnd || !isSlideshow}
-                              muted={autoMuteVideos}
+                              muted={globalMute || autoMuteVideos}
                               className={`object-contain transition-opacity duration-300 ${viewerOverlay ? 'w-full h-full' : 'max-w-full max-h-full'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
                               style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
-                              onLoadedData={(e) => { if (!autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
+                              onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
                               onError={() => setImageLoading(false)}
                               onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
                             />
@@ -2361,10 +2366,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                                 controls
                                 autoPlay
                                 loop={!waitForVideoEnd || !isSlideshow}
-                                muted={autoMuteVideos}
+                                muted={globalMute || autoMuteVideos}
                                 className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`}
                                 style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
-                                onLoadedData={(e) => { if (!autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
+                                onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
                                 onError={() => { setImageLoading(false); console.error("Video load error"); }}
                                 onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
                               />
