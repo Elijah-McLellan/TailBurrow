@@ -2035,7 +2035,16 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           <div className="flex items-center gap-4 py-2">
             <div className="flex gap-1 flex-shrink-0">
               <button onClick={() => setActiveTab('viewer')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'viewer' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><LayoutGrid className="w-3.5 h-3.5" />Viewer</button>
-              <button onClick={() => setActiveTab('feeds')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'feeds' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><Rss className="w-3.5 h-3.5" />e621</button>
+              <button onClick={() => {
+                setActiveTab('feeds');
+                if (feeds.length > 0 && !selectedFeedId && !feedSearchInput) {
+                  const firstFeed = feeds[0];
+                  setSelectedFeedId(firstFeed.id);
+                  if (!feedPosts[firstFeed.id] || feedPosts[firstFeed.id].length === 0) {
+                    fetchFeedPosts(firstFeed.id, firstFeed.query, { reset: true });
+                  }
+                }
+              }} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'feeds' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><Rss className="w-3.5 h-3.5" />e621</button>
               <button onClick={() => setActiveTab('comics')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'comics' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><BookOpen className="w-3.5 h-3.5" />Comics</button>
             </div>
 
