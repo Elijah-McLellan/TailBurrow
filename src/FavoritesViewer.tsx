@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Search, Upload, Play, Pause, ChevronLeft, ChevronRight,
   X, Tag, Trash2, Rss, Plus, Star, Maximize, Settings,
-  Database, Loader2, LayoutGrid, Volume2, VolumeX, Clock, Pencil,
+  Database, Loader2, Volume2, VolumeX, Clock, Pencil,
   Info, Undo, ChevronsDown, BookOpen, ArrowLeft, ZoomIn, ZoomOut
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
@@ -745,16 +745,6 @@ const SkeletonFeedPost = ({ index = 0, dark }: { index?: number; dark?: boolean 
   </div>
 );
 
-const skeletonWidths = [75, 60, 85, 70, 90, 65, 80, 72, 88, 68, 77, 83, 62, 95, 71];
-
-const SkeletonTagList = ({ count = 10 }: { count?: number }) => (
-  <div className="space-y-1">
-    {Array.from({ length: count }).map((_, i) => (
-      <Skeleton key={i} className="h-7" style={{ width: `${skeletonWidths[i % skeletonWidths.length]}%` }} />
-    ))}
-  </div>
-);
-
 // ─── MAIN COMPONENT ──────────────────────────────────────────
 export default function FavoritesViewer() {
   type ConfirmOpts = { title: string; message: string; okLabel?: string; cancelLabel?: string; onConfirm: () => void };
@@ -785,7 +775,6 @@ export default function FavoritesViewer() {
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [fadeIn, setFadeIn] = useState(true);
   const [imageLoading, setImageLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<'grid' | 'single'>('grid');
 
   // Slideshow
   const [isSlideshow, setIsSlideshow] = useState(false);
@@ -821,11 +810,13 @@ export default function FavoritesViewer() {
   const [feedSearchResults, setFeedSearchResults] = useState<E621Post[]>([]);
   const [feedSearchLoading, setFeedSearchLoading] = useState(false);
   const [selectedFeedPost, setSelectedFeedPost] = useState<E621Post | null>(null);
+  const [feedPostIndex, setFeedPostIndex] = useState(0);
   const [feedDetailWidth, setFeedDetailWidth] = useState(() =>
     Number(localStorage.getItem('feed_detail_width') || 500)
   );
   const feedsContainerRef = useRef<HTMLDivElement>(null);
   const [feedDetailOpen, setFeedDetailOpen] = useState(false);
+  const [libraryDetailOpen, setLibraryDetailOpen] = useState(false);
 
   // Settings & System
   const [showSettings, setShowSettings] = useState(false);
@@ -886,16 +877,9 @@ export default function FavoritesViewer() {
   const [autoscrollSpeed, setAutoscrollSpeed] = useState(1);
 
   // Layout
-  const [viewerLayout, setViewerLayout] = useState<'classic' | 'studio'>(() =>
-    (localStorage.getItem('viewer_layout') as 'classic' | 'studio') || 'classic'
+  const [libraryDetailWidth, setLibraryDetailWidth] = useState(() =>
+    Number(localStorage.getItem('library_detail_width') || 420)
   );
-  const [leftPanelWidth, setLeftPanelWidth] = useState(() =>
-    Number(localStorage.getItem('left_panel_width') || 350)
-  );
-  const [rightPanelWidth, setRightPanelWidth] = useState(() =>
-    Number(localStorage.getItem('right_panel_width') || 280)
-  );
-  const studioContainerRef = useRef<HTMLDivElement>(null);
 
   // FurAffinity
   const [faCreds, setFaCreds] = useState<FACreds>({ a: '', b: '' });
@@ -927,7 +911,7 @@ export default function FavoritesViewer() {
   const comicContainerRef = useRef<HTMLDivElement>(null);
 
   // --- DERIVED STATE (stable) ---
-  const isStudio = viewerLayout === 'studio';
+  const isStudio = true; // Single unified dark theme
   const currentItem = items[currentIndex] || null;
   const filteredPools = useMemo(() => {
     if (!comicSearchInput.trim()) return pools;
@@ -962,26 +946,6 @@ export default function FavoritesViewer() {
     () => new Set(items.filter(it => it.source === "e621").map(it => Number(it.source_id))),
     [items]
   );
-
-const allTags = useMemo(() => {
-    if (viewMode !== 'grid' || items.length === 0) return [];
-
-    const sampleSize = Math.min(items.length, 500);
-    const step = items.length <= sampleSize ? 1 : Math.floor(items.length / sampleSize);
-
-    const tagCounts = new Map<string, number>();
-    for (let i = 0; i < items.length && tagCounts.size < 5000; i += step) {
-      const item = items[i];
-      item.tags?.forEach(tag => {
-        tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
-      });
-    }
-
-    return Array.from(tagCounts.entries())
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 100)
-      .map(([tag]) => tag);
-  }, [items, viewMode]);
 
   // --- CORE DATA ---
   const loadData = useCallback(async (append: boolean, overrides?: { pageSize?: number }) => {
@@ -1220,6 +1184,26 @@ if (loadingFeedsRef.current[feedId]) return;
       setLoadingFeeds(prev => ({ ...prev, [feedId]: false }));
     }
   }, [e621CredInfo, credWarned, blacklist]);
+
+  const currentFeedPosts = useMemo(() => {
+    if (feedSearchInput && feedSearchResults.length > 0) return feedSearchResults;
+    if (selectedFeedId && feedPosts[selectedFeedId]) return feedPosts[selectedFeedId];
+    return [];
+  }, [feedSearchInput, feedSearchResults, selectedFeedId, feedPosts]);
+
+  const goToNextFeedPost = useCallback(() => {
+    if (currentFeedPosts.length === 0) return;
+    const nextIndex = (feedPostIndex + 1) % currentFeedPosts.length;
+    setFeedPostIndex(nextIndex);
+    setSelectedFeedPost(currentFeedPosts[nextIndex]);
+  }, [currentFeedPosts, feedPostIndex]);
+
+  const goToPrevFeedPost = useCallback(() => {
+    if (currentFeedPosts.length === 0) return;
+    const prevIndex = (feedPostIndex - 1 + currentFeedPosts.length) % currentFeedPosts.length;
+    setFeedPostIndex(prevIndex);
+    setSelectedFeedPost(currentFeedPosts[prevIndex]);
+  }, [currentFeedPosts, feedPostIndex]);
 
   const ensureFavorite = useCallback(async (feedId: number, post: E621Post) => {
     const id = post.id;
@@ -1720,6 +1704,7 @@ if (loadingFeedsRef.current[feedId]) return;
     
     const posts = feedPosts[selectedFeedId];
     if (posts && posts.length > 0) {
+      setFeedPostIndex(0);
       setSelectedFeedPost(posts[0]);
       pendingFeedSelectRef.current = null;
     }
@@ -1754,7 +1739,7 @@ if (loadingFeedsRef.current[feedId]) return;
           return;
         }
         if (activeTab === 'comics' && selectedPool) { closePool(); return; }
-        if (viewMode === 'single') { setViewMode('grid'); return; }
+        if (activeTab === 'viewer' && libraryDetailOpen) { setLibraryDetailOpen(false); return; }
       }
       // Comic zoom: Ctrl+ / Ctrl-
       if (activeTab === 'comics' && selectedPool && (e.ctrlKey || e.metaKey)) {
@@ -1812,7 +1797,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, viewMode, selectedPool, closePool, confirmModal]);
+  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, selectedPool, closePool, confirmModal]);
 
   // HUD management
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
@@ -1849,16 +1834,15 @@ if (loadingFeedsRef.current[feedId]) return;
   // Persist preferences
   useEffect(() => { try { localStorage.setItem('preferred_sort_order', sortOrder); } catch { /* ignore */ } }, [sortOrder]);
   useEffect(() => { localStorage.setItem('blacklist_tags', blacklist); }, [blacklist]);
-  useEffect(() => { localStorage.setItem('viewer_layout', viewerLayout); }, [viewerLayout]);
 
   useEffect(() => {
-    document.documentElement.style.backgroundColor = isStudio ? '#0f0f17' : '#111827';
-    document.body.style.backgroundColor = isStudio ? '#0f0f17' : '#111827';
+    document.documentElement.style.backgroundColor = '#0f0f17';
+    document.body.style.backgroundColor = '#0f0f17';
     return () => {
       document.documentElement.style.backgroundColor = '';
       document.body.style.backgroundColor = '';
     };
-  }, [isStudio]);
+  }, []);
 
   // Slideshow (removed currentIndex from deps to avoid timer reset) uses timeout so video-wait is re-evaluated each slide
   useEffect(() => {
@@ -1987,29 +1971,16 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [comicAutoscroll, comicAutoscrollSpeed]);
 
   // --- RENDER HELPERS ---
-  const handleGridItemSelect = useCallback((index: number) => {
+  const handleItemSelect = useCallback((index: number) => {
     setCurrentIndex(index);
-    setViewMode('single');
+    setLibraryDetailOpen(true);
   }, []);
 
-  const handleStudioItemSelect = useCallback((index: number) => {
-    setCurrentIndex(index);
-  }, []);
-
-  const handleLeftResize = useCallback((clientX: number) => {
-    if (!studioContainerRef.current) return;
-    const rect = studioContainerRef.current.getBoundingClientRect();
-    const newWidth = Math.max(200, Math.min(clientX - rect.left, rect.width * 0.5));
-    setLeftPanelWidth(newWidth);
-    localStorage.setItem('left_panel_width', String(Math.round(newWidth)));
-  }, []);
-  
-  const handleRightResize = useCallback((clientX: number) => {
-    if (!studioContainerRef.current) return;
-    const rect = studioContainerRef.current.getBoundingClientRect();
-    const newWidth = Math.max(200, Math.min(rect.right - clientX, rect.width * 0.4));
-    setRightPanelWidth(newWidth);
-    localStorage.setItem('right_panel_width', String(Math.round(newWidth)));
+  const handleLibraryDetailResize = useCallback((clientX: number) => {
+    const containerWidth = window.innerWidth;
+    const newWidth = Math.max(300, Math.min(containerWidth - clientX, containerWidth * 0.6));
+    setLibraryDetailWidth(newWidth);
+    localStorage.setItem('library_detail_width', String(Math.round(newWidth)));
   }, []);
 
   const handleFeedDetailResize = useCallback((clientX: number) => {
@@ -2023,7 +1994,7 @@ if (loadingFeedsRef.current[feedId]) return;
 const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || activeTab === 'comics';
   // --- RENDER ---
   return (
-    <div className={isStudio ? "h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white" : "min-h-screen flex flex-col overflow-x-hidden bg-gray-900 text-white"}>
+    <div className="h-screen flex flex-col overflow-hidden bg-[#0f0f17] text-white">
       {/* Lock Screen */}
       {(!lockChecked || (isLocked && hasLock)) && (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[#0f0f17]">
@@ -2073,7 +2044,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         <div className={isStudio ? "px-4" : "max-w-7xl mx-auto px-4"}>
           <div className="flex items-center gap-4 py-2">
             <div className="flex gap-1 flex-shrink-0">
-              <button onClick={() => setActiveTab('viewer')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'viewer' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><LayoutGrid className="w-3.5 h-3.5" />Viewer</button>
+              <button onClick={() => setActiveTab('viewer')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'viewer' ? 'border-[#967abc] text-[#967abc]' : 'border-transparent text-[#9e98aa] hover:text-white'}`}><Database className="w-3.5 h-3.5" />Library</button>
               <button onClick={() => {
                 setActiveTab('feeds');
                 if (feeds.length > 0 && !selectedFeedId && !feedSearchInput) {
@@ -2083,7 +2054,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     fetchFeedPosts(firstFeed.id, firstFeed.query, { reset: true });
                   }
                 }
-              }} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'feeds' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><Rss className="w-3.5 h-3.5" />e621</button>
+              }} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'feeds' ? 'border-[#967abc] text-[#967abc]' : 'border-transparent text-[#9e98aa] hover:text-white'}`}><Rss className="w-3.5 h-3.5" />Discover</button>
               <button onClick={() => setActiveTab('comics')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'comics' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><BookOpen className="w-3.5 h-3.5" />Comics</button>
             </div>
 
@@ -2153,216 +2124,107 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           </div>
         </div>
       </div>
+            {/* Fullscreen Overlay */}
+      {viewerOverlay && currentItem && (
+        <div
+          className="fixed inset-0 z-50 bg-black"
+          onMouseMove={pokeHud}
+          onMouseDown={pokeHud}
+          onWheel={pokeHud}
+          onTouchStart={pokeHud}
+        >
+          <div className="relative w-full h-full">
+            {/* Click zones for navigation */}
+            <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={() => goToPrev(true)} />
+            <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} />
+
+            {/* Media */}
+            <div className="w-full h-full flex items-center justify-center">
+              {isVideo ? (
+                <video
+                  key={currentItem.url}
+                  src={currentItem.url}
+                  controls
+                  autoPlay
+                  loop={!waitForVideoEnd || !isSlideshow}
+                  muted={globalMute || autoMuteVideos}
+                  className={`w-full h-full object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                  style={{ pointerEvents: 'none' }}
+                  onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
+                  onError={() => setImageLoading(false)}
+                  onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
+                />
+              ) : (
+                <img
+                  key={currentItem.url}
+                  src={currentItem.url}
+                  alt=""
+                  className={`w-full h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                  onLoad={() => setImageLoading(false)}
+                  onError={(e) => {
+                    setImageLoading(false);
+                    e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E";
+                  }}
+                />
+              )}
+            </div>
+
+            {/* HUD Controls */}
+            <div
+              className={`absolute bottom-6 left-1/2 -translate-x-1/2 transition-all duration-300 ease-out ${showHud ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"}`}
+              onMouseEnter={() => { hudHoverRef.current = true; setShowHud(true); }}
+              onMouseLeave={() => { hudHoverRef.current = false; scheduleHudHide(); }}
+            >
+              <div className="relative z-20 px-6 py-4 bg-gray-900/80 backdrop-blur-md rounded-2xl border border-gray-700/50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-center gap-1.5">
+                  <button onClick={() => goToPrev(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronLeft className="w-4 h-4" /></button>
+                  <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded">{isSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
+                  <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-2 py-1.5 bg-[#1d1b2d] border border-[#4c4b5a] rounded-xl text-sm">
+                    <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
+                  </select>
+                  <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
+                  <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
+                  <button onClick={async () => { await document.exitFullscreen(); setViewerOverlay(false); }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><Maximize className="w-4 h-4" /></button>
+                  <button onClick={() => goToNext(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronRight className="w-4 h-4" /></button>
+                  <span className="text-xs text-[#4c4b5a] ml-1">{currentIndex + 1}/{itemCount}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Viewer Tab */}
       {activeTab === 'viewer' && (
-        <>
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          {selectedTags.length > 0 && (
-            <div className={`px-4 py-2 flex gap-2 flex-wrap border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
-              {selectedTags.map(tag => (
-                <button key={tag} onClick={() => toggleTag(tag)} className={`px-3 py-1 rounded-full text-sm flex items-center gap-1 ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}>
-                  {tag}<X className="w-3 h-3" />
-                </button>
-              ))}
-            </div>
-          )}
-
-          {(initialLoading || isSearching) ? (
-            <div className={`${isStudio ? 'px-4 flex-1 overflow-hidden' : 'max-w-7xl mx-auto'} p-4`}>
-              <Masonry
-                breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
-                className="flex w-auto gap-3"
-                columnClassName="flex flex-col gap-3"
-              >
-                {Array.from({ length: gridColumns * 3 }).map((_, i) => (
-                  <SkeletonGridItem key={`init-skeleton-${i}`} index={i} dark={isStudio} />
+        <div className="flex-1 flex overflow-hidden bg-[#0f0f17]">
+          {/* Grid */}
+          <div className={`${libraryDetailOpen && currentItem ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto overflow-x-hidden`} style={libraryDetailOpen && currentItem ? { width: `calc(100% - ${libraryDetailWidth}px - 6px)` } : undefined}>
+            {/* Selected tags bar */}
+            {selectedTags.length > 0 && (
+              <div className="px-4 py-2 flex gap-2 flex-wrap border-b border-[#1d1b2d] bg-[#161621]">
+                {selectedTags.map(tag => (
+                  <button key={tag} onClick={() => toggleTag(tag)} className="px-3 py-1 rounded-full text-sm flex items-center gap-1 bg-[#967abc] hover:bg-[#967abc]/80">
+                    {tag}<X className="w-3 h-3" />
+                  </button>
                 ))}
-              </Masonry>
-            </div>
-            ) : itemCount > 0 ? (
-            viewerLayout === 'studio' ? (
-              <div ref={studioContainerRef} className="flex flex-1 overflow-hidden">
-                {/* Left Panel - Grid */}
-                <div style={{ width: leftPanelWidth }} className="overflow-y-auto flex-shrink-0 border-r border-[#1d1b2d] bg-[#0f0f17]">
-                  <div className="p-2">
-                    <Masonry
-                      breakpointCols={Math.max(1, Math.floor(leftPanelWidth / 180))}
-                      className="flex w-auto gap-2"
-                      columnClassName="flex flex-col gap-2"
-                    >
-                      {items.map((item, index) => (
-                        <GridItem key={item.item_id} item={item} index={index} onSelect={handleStudioItemSelect} isSelected={index === currentIndex} />
-                      ))}
-                      {isLoadingMore && Array.from({ length: Math.max(1, Math.floor(leftPanelWidth / 180)) * 2 }).map((_, i) => (
-                        <SkeletonGridItem key={`skeleton-${i}`} index={i} dark />
-                      ))}
-                    </Masonry>
-                    {hasMoreItems && <InfiniteSentinel onVisible={loadMoreItems} disabled={isLoadingMore} />}
-                  </div>
-                </div>
-
-                <ResizeHandle onDrag={handleLeftResize} />
-
-                {/* Center Panel - Viewer */}
-                <div className="flex-1 flex flex-col overflow-hidden min-w-[200px] bg-[#0f0f17]">
-                  <div
-                    className={viewerOverlay ? "fixed inset-0 z-50 bg-black" : "flex-1 flex flex-col overflow-hidden min-h-0"}
-                    onMouseMove={() => viewerOverlay && pokeHud()}
-                    onMouseDown={() => viewerOverlay && pokeHud()}
-                    onWheel={() => viewerOverlay && pokeHud()}
-                    onTouchStart={() => viewerOverlay && pokeHud()}
-                  >
-                    {currentItem ? (
-                      <div className={viewerOverlay ? "relative w-full h-full" : "relative flex-1 flex flex-col min-h-0 overflow-hidden"}>
-                        {imageLoading && (
-                          <div className="absolute inset-0 flex items-center justify-center z-10">
-                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#967abc]" />
-                          </div>
-                        )}
-                        {viewerOverlay && (
-                          <>
-                            <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={() => goToPrev(true)} />
-                            <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} />
-                          </>
-                        )}
-                        <div className={viewerOverlay ? "w-full h-full flex items-center justify-center bg-black" : "flex-1 h-0 flex items-center justify-center bg-[#0a0a12] overflow-hidden"}>
-                          {isVideo ? (
-                            <video
-                              key={currentItem.url}
-                              src={currentItem.url}
-                              controls
-                              autoPlay
-                              loop={!waitForVideoEnd || !isSlideshow}
-                              muted={globalMute || autoMuteVideos}
-                              className={`object-contain transition-opacity duration-300 ${viewerOverlay ? 'w-full h-full' : 'max-w-full max-h-full'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
-                              style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
-                              onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
-                              onError={() => setImageLoading(false)}
-                              onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
-                            />
-                          ) : (
-                            <img
-                              key={currentItem.url}
-                              src={currentItem.url}
-                              alt=""
-                              className={`object-contain transition-opacity duration-200 ${viewerOverlay ? 'w-full h-full' : 'max-w-full max-h-full'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
-                              onLoad={() => setImageLoading(false)}
-                              onError={(e) => {
-                                setImageLoading(false);
-                                e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E";
-                              }}
-                            />
-                          )}
-                        </div>
-
-                        {/* Controls */}
-                        <div
-                          className={viewerOverlay
-                            ? ["absolute bottom-6 left-1/2 -translate-x-1/2", "transition-all duration-300 ease-out", showHud ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"].join(" ")
-                            : "p-2 bg-[#161621] border-t border-[#1d1b2d] flex-shrink-0"
-                          }
-                          onMouseEnter={() => { if (viewerOverlay) { hudHoverRef.current = true; setShowHud(true); } }}
-                          onMouseLeave={() => { if (viewerOverlay) { hudHoverRef.current = false; scheduleHudHide(); } }}
-                        >
-                          <div
-                            className={viewerOverlay ? "relative z-20 px-6 py-4 bg-gray-900/80 backdrop-blur-md rounded-2xl border border-gray-700/50 shadow-2xl" : ""}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <div className="flex items-center justify-center gap-1.5">
-                              <button onClick={() => goToPrev(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronLeft className="w-4 h-4" /></button>
-                              <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded">{isSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
-                              <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-2 py-1.5 bg-[#1d1b2d] border border-[#4c4b5a] rounded-xl text-sm">
-                                <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
-                              </select>
-                              <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
-                              <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
-                              <button onClick={async () => {
-                                try {
-                                  if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); setViewerOverlay(true); }
-                                  else { await document.exitFullscreen(); setViewerOverlay(false); }
-                                } catch (err) { console.warn("Fullscreen failed:", err); }
-                              }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><Maximize className="w-4 h-4" /></button>
-                              {!viewerOverlay && <button onClick={deleteCurrentItem} className="p-1.5 bg-[#1d1b2d] hover:bg-red-600 rounded text-[#9e98aa] hover:text-white transition-colors"><Trash2 className="w-4 h-4" /></button>}
-                              {!viewerOverlay && <button onClick={openEditModal} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded text-[#9e98aa] hover:text-white"><Pencil className="w-4 h-4" /></button>}
-                              <button onClick={() => goToNext(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronRight className="w-4 h-4" /></button>
-                              <span className="text-xs text-[#4c4b5a] ml-1">{currentIndex + 1}/{itemCount}</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center text-[#4c4b5a]">
-                        <div className="text-center">
-                          <Database className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                          <p>Select an item to view</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <ResizeHandle onDrag={handleRightResize} />
-
-                {/* Right Panel - Tags & Info */}
-                <div style={{ width: rightPanelWidth }} className="overflow-y-auto flex-shrink-0 bg-[#161621] border-l border-[#1d1b2d] p-4">
-                  {currentItem ? (
-                    <>
-                      <div className="mb-4 pb-3 border-b border-[#1d1b2d]">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider flex-shrink-0 ${currentItem.source === 'e621' ? 'bg-blue-600' : 'bg-orange-600'}`}>
-                              {currentItem.source === 'e621' ? 'E6' : 'FA'}
-                            </span>
-                            <span className="text-sm font-medium truncate text-white">
-                              {(() => {
-                                const artists = (currentItem.artist && currentItem.artist.length > 0) ? currentItem.artist : currentItem.tags_artist;
-                                const filtered = (artists || []).filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
-                                return filtered.length > 0 ? filtered.join(", ") : "Unknown";
-                              })()}
-                            </span>
-                          </div>
-                          <button onClick={openEditModal} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded text-[#9e98aa] hover:text-white transition-colors flex-shrink-0" title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
-                        </div>
-                        <div className="flex gap-3 text-xs text-[#9e98aa]">
-                          <span>⭐ {currentItem.fav_count || 0}</span>
-                          <span>Score: {currentItem.score.total}</span>
-                          <span className={`font-bold uppercase ${currentItem.rating === 'e' ? 'text-red-400' : currentItem.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
-                            {currentItem.rating === 'e' ? 'Explicit' : currentItem.rating === 'q' ? 'Questionable' : 'Safe'}
-                          </span>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-                          {currentItem.source === 'e621' && (
-                            <button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.source_id}`)} className="text-[#967abc] hover:text-[#967abc]/80 underline">e621</button>
-                          )}
-                          {currentItem.sources?.filter(s => currentItem.source !== 'e621' || !s.includes('e621.net/posts')).slice(0, 3).map((source, i) => (
-                            <button key={i} onClick={() => openExternalUrl(source)} className="text-[#967abc] hover:text-[#967abc]/80 underline" title={source}>{getSocialMediaName(source)}</button>
-                          ))}
-                        </div>
-                      </div>
-                      <h3 className="text-sm font-semibold mb-3 flex items-center gap-2 text-[#9e98aa]"><Tag className="w-3.5 h-3.5" /> Tags</h3>
-                      <TagSection title="Artists" tags={currentItem.tags_artist} color="text-yellow-400" onTagClick={toggleTag} />
-                      <TagSection title="Copyrights" tags={currentItem.tags_copyright} color="text-pink-400" onTagClick={toggleTag} />
-                      <TagSection title="Characters" tags={currentItem.tags_character} color="text-green-400" onTagClick={toggleTag} />
-                      <TagSection title="Species" tags={currentItem.tags_species} color="text-red-400" onTagClick={toggleTag} />
-                      <TagSection title="General" tags={currentItem.tags_general} color="text-blue-300" onTagClick={toggleTag} />
-                      <TagSection title="Meta" tags={currentItem.tags_meta} color="text-gray-400" onTagClick={toggleTag} />
-                      <TagSection title="Lore" tags={currentItem.tags_lore} color="text-purple-300" onTagClick={toggleTag} />
-                    </>
-                  ) : (
-                    <div className="text-[#4c4b5a] text-center mt-10">
-                      <Tag className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                      <p className="text-sm">Select an item to see tags</p>
-                    </div>
-                  )}
-                </div>
               </div>
-            ) : (
-            <div className="max-w-7xl mx-auto p-4">
-              {viewMode === 'grid' ? (
+            )}
+
+            <div className="p-4">
+              {(initialLoading || isSearching) ? (
+                <Masonry
+                  breakpointCols={{ default: libraryDetailOpen ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }}
+                  className="flex w-auto gap-3"
+                  columnClassName="flex flex-col gap-3"
+                >
+                  {Array.from({ length: gridColumns * 3 }).map((_, i) => (
+                    <SkeletonGridItem key={`init-skeleton-${i}`} index={i} dark />
+                  ))}
+                </Masonry>
+              ) : itemCount > 0 ? (
                 <>
                   <Masonry
-                    breakpointCols={{ default: gridColumns, 700: 2, 500: 1 }}
+                    breakpointCols={{ default: libraryDetailOpen ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }}
                     className="flex w-auto gap-3"
                     columnClassName="flex flex-col gap-3"
                   >
@@ -2371,244 +2233,164 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         key={item.item_id}
                         item={item}
                         index={index}
-                        onSelect={handleGridItemSelect}
+                        onSelect={handleItemSelect}
+                        isSelected={libraryDetailOpen && index === currentIndex}
                       />
                     ))}
                     {isLoadingMore && Array.from({ length: gridColumns * 2 }).map((_, i) => (
-                      <SkeletonGridItem key={`skeleton-${i}`} index={i} />
+                      <SkeletonGridItem key={`skeleton-${i}`} index={i} dark />
                     ))}
                   </Masonry>
-                  {hasMoreItems && (
-                    <InfiniteSentinel onVisible={loadMoreItems} disabled={isLoadingMore} />
-                  )}
+                  {hasMoreItems && <InfiniteSentinel onVisible={loadMoreItems} disabled={isLoadingMore} />}
                 </>
               ) : (
-                /* Single View */
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                  <div className="lg:col-span-3">
-                    <div
-                      className={viewerOverlay ? "fixed inset-0 z-50 bg-black" : "bg-gray-800 rounded-lg overflow-hidden"}
-                      onMouseMove={() => viewerOverlay && pokeHud()}
-                      onMouseDown={() => viewerOverlay && pokeHud()}
-                      onWheel={() => viewerOverlay && pokeHud()}
-                      onTouchStart={() => viewerOverlay && pokeHud()}
-                    >
-                      {currentItem && (
-                        <div className={viewerOverlay ? "relative w-full h-full" : "relative bg-black"}>
-                        {imageLoading && (
-                            <div className="absolute inset-0 flex items-center justify-center z-10">
-                              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500" />
-                            </div>
-                          )}
-                          {viewerOverlay && (
-                            <>
-                              <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={() => goToPrev(true)} />
-                              <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} />
-                            </>
-                          )}
-                          <div className={viewerOverlay ? "w-full h-full flex items-center justify-center bg-black" : "w-full h-[70vh] flex items-center justify-center bg-gray-950 rounded-t-lg overflow-hidden relative"}>
-                            {isVideo ? (
-                              <video
-                                key={currentItem.url}
-                                src={currentItem.url}
-                                controls
-                                autoPlay
-                                loop={!waitForVideoEnd || !isSlideshow}
-                                muted={globalMute || autoMuteVideos}
-                                className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`}
-                                style={viewerOverlay ? { pointerEvents: 'none' } : undefined}
-                                onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
-                                onError={() => { setImageLoading(false); console.error("Video load error"); }}
-                                onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
-                              />
-                            ) : (
-                              <img
-                                key={currentItem.url}
-                                src={currentItem.url}
-                                alt="Favorite"
-                                className={`object-contain transition-opacity duration-300 ${viewerOverlay ? 'w-full h-full' : 'max-w-full max-h-[70vh]'} ${fadeIn ? "opacity-100" : "opacity-0"}`}
-                                onLoad={() => setImageLoading(false)}
-                                onError={(e) => {
-                                  setImageLoading(false);
-                                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E";
-                                }}
-                              />
-                            )}
-                          </div>
-
-                          {/* Controls Bar */}
-                          <div
-                            className={viewerOverlay
-                              ? [
-                                "absolute bottom-6 left-1/2 -translate-x-1/2",
-                                "transition-all duration-300 ease-out",
-                                showHud ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none",
-                              ].join(" ")
-                              : "p-4 bg-gray-800 border-t border-gray-700"
-                            }
-                            onMouseEnter={() => { if (viewerOverlay) { hudHoverRef.current = true; setShowHud(true); } }}
-                            onMouseLeave={() => { if (viewerOverlay) { hudHoverRef.current = false; scheduleHudHide(); } }}
-                          >
-                            <div
-                              className={viewerOverlay ? "relative z-20 px-6 py-4 bg-gray-900/80 backdrop-blur-md rounded-2xl border border-gray-700/50 shadow-2xl" : ""}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <div className="flex items-center justify-center gap-2">
-                                {!viewerOverlay && <button onClick={() => goToPrev(true)} className="p-2 bg-gray-700 hover:bg-gray-600 rounded"><ChevronLeft className="w-5 h-5" /></button>}
-                                <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-2 bg-purple-600 hover:bg-purple-700 rounded">{isSlideshow ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}</button>
-                                <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-xl">
-                                  <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
-                                </select>
-                                <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-2 rounded ${autoMuteVideos ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-700 hover:bg-gray-600'}`} title="Mute all videos">{autoMuteVideos ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}</button>
-                                <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-2 rounded ${waitForVideoEnd ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-700 hover:bg-gray-600'}`} title="Wait for videos to finish"><Clock className="w-5 h-5" /></button>
-                                <button onClick={async () => {
-                                  try {
-                                    if (!document.fullscreenElement) {
-                                      await document.documentElement.requestFullscreen();
-                                      setViewerOverlay(true);
-                                    } else {
-                                      await document.exitFullscreen();
-                                      setViewerOverlay(false);
-                                    }
-                                  } catch (e) {
-                                    console.warn("Fullscreen request failed:", e);
-                                  }
-                                }} className="p-2 bg-gray-700 hover:bg-gray-600 rounded" title={viewerOverlay ? "Exit full viewer" : "Full viewer"}><Maximize className="w-5 h-5" /></button>                                
-                                {!viewerOverlay && <button onClick={deleteCurrentItem} className="p-2 bg-gray-700 hover:bg-red-600 rounded text-gray-400 hover:text-white transition-colors" title="Move to trash"><Trash2 className="w-5 h-5" /></button>}
-                                {!viewerOverlay && <button onClick={() => goToNext(true)} className="p-2 bg-gray-700 hover:bg-gray-600 rounded"><ChevronRight className="w-5 h-5" /></button>}
-                              </div>
-                              {!viewerOverlay && <div className="text-center text-gray-400 text-sm mt-4">{currentIndex + 1} / {itemCount}</div>}
-                            </div>
-                          </div>
-                        </div>
-                      )}
+                <div className="flex-1 flex items-center justify-center text-[#4c4b5a] min-h-[60vh]">
+                  {!libraryRoot ? (
+                    <div className="text-center animate-in fade-in zoom-in duration-300">
+                      <Database className="w-20 h-20 mx-auto mb-6 opacity-80 text-[#967abc]" />
+                      <h2 className="text-3xl font-bold text-white mb-3">Welcome!</h2>
+                      <p className="mb-8 max-w-md mx-auto text-[#9e98aa]">
+                        To get started, select a folder where your favorites will be stored.
+                        <br /><span className="text-sm opacity-75">(You can create a new empty folder or select an existing one)</span>
+                      </p>
+                      <button onClick={changeLibraryRoot} className="px-8 py-4 text-white rounded-xl font-bold text-lg shadow-lg transition-all transform hover:-translate-y-1 bg-[#967abc] hover:bg-[#967abc]/80 hover:shadow-[#967abc]/20">
+                        Select Library Folder
+                      </button>
                     </div>
+                  ) : (
+                    <div className="text-center">
+                      <Upload className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                      <p className="text-xl font-semibold text-gray-200">Library is Ready</p>
+                      <p className="text-sm mt-2 mb-6 text-[#9e98aa]">
+                        Your database is set up. Go to <b>Settings</b> to sync your favorites.
+                      </p>
+                      <button onClick={() => setShowSettings(true)} className="px-4 py-2 rounded-xl text-white transition-colors bg-[#1d1b2d] hover:bg-[#4c4b5a]">Open Settings</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
 
-                    {/* Item Info Bar */}
-                    {currentItem && (
-                      <div className="mt-4 bg-gray-800 rounded-lg p-4">
-                        <div className="text-sm text-gray-400 mb-2">
-                          {currentItem.source === 'e621' && (
-                            <button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.source_id}`)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0">
-                              e621
-                            </button>
-                          )}
-                          {currentItem.sources && currentItem.sources.length > 0 && (() => {
-                            const otherSources = currentItem.sources.filter(s =>
-                              currentItem.source !== 'e621' || !s.includes('e621.net/posts')
-                            );
-                            return otherSources.slice(0, 3).map((source, i) => (
-                              <span key={i}>
-                                {(i > 0 || currentItem.source === 'e621') && ' • '}
-                                <button onClick={() => openExternalUrl(source)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0" title={source}>
-                                  {getSocialMediaName(source)}
-                                </button>
-                              </span>
-                            ));
-                          })()}
-                          {(() => {
-                            const validArtists = (currentItem.artist || []).filter(a =>
-                              !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a)
-                            );
-                            if (validArtists.length === 0) return null;
-                            return (
-                              <span>
-                                {' • Artist: '}
-                                {validArtists.map((artist, i) => (
-                                  <span key={i}>
-                                    {i > 0 && ', '}
-                                    <button onClick={() => openExternalUrl(`https://e621.net/posts?tags=${artist}`)} className="text-purple-400 hover:text-purple-300 underline cursor-pointer bg-transparent border-none p-0">
-                                      {artist}
-                                    </button>
-                                  </span>
-                                ))}
-                              </span>
-                            );
-                          })()}
-                        </div>
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <button onClick={openEditModal} className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-gray-300 hover:text-white transition-colors" title="Edit Post">
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
-                          {[...(currentItem.tags || [])].sort((a, b) => a.localeCompare(b)).map((tag, i) => (
-                            <button key={i} onClick={() => toggleTag(tag)}                             className={`px-2.5 py-1 rounded-full text-xs ${selectedTags.includes(tag) ? 'bg-purple-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-white'}`}>
-                              {tag}
-                            </button>
-                          ))}
-                        </div>
+          {/* Detail Pane */}
+          {libraryDetailOpen && currentItem && (
+            <>
+              <ResizeHandle onDrag={handleLibraryDetailResize} />
+              <div style={{ width: libraryDetailWidth }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
+                {/* Header */}
+                <div className="flex-shrink-0 p-3 border-b border-[#1d1b2d] flex items-center justify-between">
+                  <span className="text-xs text-[#4c4b5a]">{currentIndex + 1} / {itemCount}</span>
+                  <button
+                    onClick={() => setLibraryDetailOpen(false)}
+                    className="p-1.5 rounded-lg transition-colors hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Everything below header scrolls together */}
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  {/* Media */}
+                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 170px)', minHeight: '300px' }}>
+                    {imageLoading && (
+                      <div className="absolute inset-0 flex items-center justify-center z-10">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#967abc]" />
                       </div>
+                    )}
+                    {isVideo ? (
+                      <video
+                        key={currentItem.url}
+                        src={currentItem.url}
+                        controls
+                        autoPlay
+                        loop={!waitForVideoEnd || !isSlideshow}
+                        muted={globalMute || autoMuteVideos}
+                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                        onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
+                        onError={() => setImageLoading(false)}
+                        onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
+                      />
+                    ) : (
+                      <img
+                        key={currentItem.url}
+                        src={currentItem.url}
+                        alt=""
+                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
+                        onLoad={() => setImageLoading(false)}
+                        onError={(e) => {
+                          setImageLoading(false);
+                          e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='300'%3E%3Crect fill='%23374151' width='400' height='300'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%239CA3AF' font-size='20'%3EImage not found%3C/text%3E%3C/svg%3E";
+                        }}
+                      />
                     )}
                   </div>
 
-                  {/* Sidebar */}
-                  <div className="lg:col-span-1">
-                    <div className="bg-gray-800 rounded-lg p-4 h-full max-h-[80vh] overflow-y-auto">
-                      {viewMode === 'single' && currentItem ? (
-                        <>
-                          <h3 className="text-lg font-semibold mb-3 flex items-center gap-2"><Tag className="w-4 h-4" /> Tags</h3>
-                          <TagSection title="Artists" tags={currentItem.tags_artist} color="text-yellow-400" onTagClick={toggleTag} />
-                          <TagSection title="Copyrights" tags={currentItem.tags_copyright} color="text-pink-400" onTagClick={toggleTag} />
-                          <TagSection title="Characters" tags={currentItem.tags_character} color="text-green-400" onTagClick={toggleTag} />
-                          <TagSection title="Species" tags={currentItem.tags_species} color="text-red-400" onTagClick={toggleTag} />
-                          <TagSection title="General" tags={currentItem.tags_general} color="text-blue-300" onTagClick={toggleTag} />
-                          <TagSection title="Meta" tags={currentItem.tags_meta} color="text-gray-400" onTagClick={toggleTag} />
-                          <TagSection title="Lore" tags={currentItem.tags_lore} color="text-purple-300" onTagClick={toggleTag} />
-                        </>
-                      ) : (
-                        <>
-                          <h3 className="text-lg font-semibold mb-3 flex items-center gap-2"><Tag className="w-4 h-4" /> Popular Tags</h3>
-                          {(initialLoading || isSearching) ? (
-                            <SkeletonTagList count={15} />
-                          ) : (
-                            <div className="space-y-1">
-                              {allTags.slice(0, 50).map(tag => (
-                              <button key={tag} onClick={() => toggleTag(tag)} className={`w-full text-left px-2 py-1 rounded text-sm hover:bg-gray-700 ${selectedTags.includes(tag) ? 'bg-purple-600' : ''}`}>
-                                {tag}
-                              </button>
-                            ))}
-                          </div>
-                           )}
-                        </>
-                      )}
+                  {/* Controls - sticks visually below image */}
+                  <div className="sticky bottom-0 z-10 p-3 border-t border-[#1d1b2d] bg-[#161621] flex items-center justify-center gap-1.5">
+                    <button onClick={() => goToPrev(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><ChevronLeft className="w-4 h-4" /></button>
+                    <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded transition-colors">{isSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
+                    <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-2 py-1.5 bg-[#1d1b2d] border border-[#4c4b5a] rounded-xl text-xs">
+                      <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
+                    </select>
+                    <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded transition-colors ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
+                    <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded transition-colors ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
+                    <button onClick={async () => {
+                      try {
+                        if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); setViewerOverlay(true); }
+                        else { await document.exitFullscreen(); setViewerOverlay(false); }
+                      } catch (err) { console.warn("Fullscreen failed:", err); }
+                    }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><Maximize className="w-4 h-4" /></button>
+                    <button onClick={deleteCurrentItem} className="p-1.5 bg-[#1d1b2d] hover:bg-red-600 rounded text-[#9e98aa] hover:text-white transition-colors"><Trash2 className="w-4 h-4" /></button>
+                    <button onClick={openEditModal} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded text-[#9e98aa] hover:text-white transition-colors"><Pencil className="w-4 h-4" /></button>
+                    <button onClick={() => goToNext(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><ChevronRight className="w-4 h-4" /></button>
+                  </div>
+
+                  {/* Info & Tags */}
+                  <div className="p-4">
+                    <div className="mb-4 pb-3 border-b border-[#1d1b2d]">
+                      <div className="flex items-center gap-1.5 mb-2 min-w-0">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider flex-shrink-0 ${currentItem.source === 'e621' ? 'bg-blue-600' : 'bg-orange-600'}`}>
+                          {currentItem.source === 'e621' ? 'E6' : 'FA'}
+                        </span>
+                        <span className="text-sm font-medium truncate text-white">
+                          {(() => {
+                            const artists = (currentItem.artist && currentItem.artist.length > 0) ? currentItem.artist : currentItem.tags_artist;
+                            const filtered = (artists || []).filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
+                            return filtered.length > 0 ? filtered.join(", ") : "Unknown";
+                          })()}
+                        </span>
+                      </div>
+                      <div className="flex gap-3 text-xs text-[#9e98aa]">
+                        <span>⭐ {currentItem.fav_count || 0}</span>
+                        <span>Score: {currentItem.score.total}</span>
+                        <span className={`font-bold uppercase ${currentItem.rating === 'e' ? 'text-red-400' : currentItem.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
+                          {currentItem.rating === 'e' ? 'Explicit' : currentItem.rating === 'q' ? 'Questionable' : 'Safe'}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                        {currentItem.source === 'e621' && (
+                          <button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.source_id}`)} className="text-[#967abc] hover:text-[#967abc]/80 underline">e621</button>
+                        )}
+                        {currentItem.sources?.filter(s => currentItem.source !== 'e621' || !s.includes('e621.net/posts')).slice(0, 3).map((source, i) => (
+                          <button key={i} onClick={() => openExternalUrl(source)} className="text-[#967abc] hover:text-[#967abc]/80 underline" title={source}>{getSocialMediaName(source)}</button>
+                        ))}
+                      </div>
                     </div>
+
+                    <h3 className="text-sm font-semibold mb-3 flex items-center gap-2 text-[#9e98aa]"><Tag className="w-3.5 h-3.5" /> Tags</h3>
+                    <TagSection title="Artists" tags={currentItem.tags_artist} color="text-yellow-400" onTagClick={toggleTag} />
+                    <TagSection title="Copyrights" tags={currentItem.tags_copyright} color="text-pink-400" onTagClick={toggleTag} />
+                    <TagSection title="Characters" tags={currentItem.tags_character} color="text-green-400" onTagClick={toggleTag} />
+                    <TagSection title="Species" tags={currentItem.tags_species} color="text-red-400" onTagClick={toggleTag} />
+                    <TagSection title="General" tags={currentItem.tags_general} color="text-blue-300" onTagClick={toggleTag} />
+                    <TagSection title="Meta" tags={currentItem.tags_meta} color="text-gray-400" onTagClick={toggleTag} />
+                    <TagSection title="Lore" tags={currentItem.tags_lore} color="text-purple-300" onTagClick={toggleTag} />
                   </div>
                 </div>
-              )}
-            </div>
-            )
-          ) : (
-            /* Empty State */
-            <div className="text-center py-20 text-gray-400">
-              {!libraryRoot ? (
-                <div className="animate-in fade-in zoom-in duration-300">
-                  <Database className={`w-20 h-20 mx-auto mb-6 opacity-80 ${isStudio ? 'text-[#967abc]' : 'text-purple-500'}`} />
-                  <h2 className="text-3xl font-bold text-white mb-3">Welcome!</h2>
-                  <p className={`mb-8 max-w-md mx-auto ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
-                    To get started, select a folder where your favorites will be stored.
-                    <br /><span className="text-sm opacity-75">(You can create a new empty folder or select an existing one)</span>
-                  </p>
-                  <button onClick={changeLibraryRoot} className={`px-8 py-4 text-white rounded-xl font-bold text-lg shadow-lg transition-all transform hover:-translate-y-1 ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80 hover:shadow-[#967abc]/20' : 'bg-purple-600 hover:bg-purple-700 hover:shadow-purple-500/20'}`}>
-                    Select Library Folder
-                  </button>
-                </div>
-              ) : (
-                <div>
-                  <Upload className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p className="text-xl font-semibold text-gray-200">Library is Ready</p>
-                  <p className={`text-sm mt-2 mb-6 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
-                    Your database is set up at:<br />
-                    <span className={`font-mono text-xs px-2 py-1 rounded-lg mt-1 inline-block ${isStudio ? 'bg-[#1c1b26]' : 'bg-gray-800'}`}>{libraryRoot}</span>
-                  </p>
-                  <div className={`p-4 rounded-xl max-w-md mx-auto border ${isStudio ? 'bg-[#161621] border-[#1d1b2d]' : 'bg-gray-800 border-gray-700'}`}>
-                    <p className="text-sm mb-3">Go to <b>Settings → e621</b> to log in and sync your favorites.</p>
-                    <button onClick={() => setShowSettings(true)} className={`px-4 py-2 rounded-xl text-white transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Open Settings</button>
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            </>
           )}
         </div>
-        </>
       )}
 
       {/* Feeds Tab */}
@@ -2829,6 +2611,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         busy={!!feedActionBusy[post.id]}
                         onFavorite={ensureFavorite}
                         onSelect={(p) => {
+                          const idx = feedSearchResults.findIndex(fp => fp.id === p.id);
+                          setFeedPostIndex(idx >= 0 ? idx : 0);
                           setSelectedFeedPost(p);
                           setFeedDetailOpen(true);
                         }}
@@ -2851,6 +2635,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                             busy={!!feedActionBusy[post.id]}
                             onFavorite={ensureFavorite}
                             onSelect={(p) => {
+                              const idx = (feedPosts[feed.id] || []).findIndex(fp => fp.id === p.id);
+                              setFeedPostIndex(idx >= 0 ? idx : 0);
                               setSelectedFeedPost(p);
                               setFeedDetailOpen(true);
                             }}
@@ -2893,21 +2679,25 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           {feedDetailOpen && selectedFeedPost && (
             <>
               <ResizeHandle onDrag={handleFeedDetailResize} />
-              <div style={{ width: feedDetailWidth }} className={`flex-shrink-0 overflow-y-auto ${isStudio ? 'bg-[#161621] border-l border-[#1d1b2d]' : 'bg-gray-800 border-l border-gray-700'}`}>
-                <div className="p-4">
-                  {/* Close button */}
+              <div style={{ width: feedDetailWidth }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
+                {/* Header */}
+                <div className="flex-shrink-0 p-3 border-b border-[#1d1b2d] flex items-center justify-between">
+                  <span className="text-xs text-[#4c4b5a]">{feedPostIndex + 1} / {currentFeedPosts.length}</span>
                   <button
                     onClick={() => {
                       setFeedDetailOpen(false);
                       setSelectedFeedPost(null);
                     }}
-                    className={`mb-3 p-1.5 rounded-lg transition-colors ${isStudio ? 'hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white' : 'hover:bg-gray-700 text-gray-400 hover:text-white'}`}
+                    className="p-1.5 rounded-lg transition-colors hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white"
                   >
                     <X className="w-4 h-4" />
                   </button>
+                </div>
 
-                  {/* Image/Video */}
-                  <div className={`rounded-lg overflow-hidden mb-4 ${isStudio ? 'bg-[#0a0a12]' : 'bg-black'}`}>
+                {/* Everything below header scrolls together */}
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  {/* Media */}
+                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 170px)', minHeight: '300px' }}>
                     {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
                       <video
                         key={selectedFeedPost.id}
@@ -2915,90 +2705,96 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         controls
                         autoPlay
                         loop
-                        className="w-full h-auto"
+                        muted={globalMute || autoMuteVideos}
+                        className="max-w-full max-h-full object-contain"
+                        onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; }}
                       />
                     ) : (
                       <img
                         src={selectedFeedPost.sample.url || selectedFeedPost.file.url || selectedFeedPost.preview.url || ''}
                         alt=""
-                        className="w-full h-auto"
+                        className="max-w-full max-h-full object-contain"
                         referrerPolicy="no-referrer"
                       />
                     )}
                   </div>
 
-                  {/* Info */}
-                  <div className={`mb-4 pb-3 border-b ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider bg-blue-600">E6</span>
-                      <span className="text-sm font-medium truncate text-white">
-                        {(() => {
-                          const artists = selectedFeedPost.tags.artist.filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
-                          return artists.length > 0 ? artists.join(", ") : "Unknown";
-                        })()}
-                      </span>
-                    </div>
-                    <div className={`flex gap-3 text-xs ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>
-                      <span>⭐ {selectedFeedPost.fav_count}</span>
-                      <span>Score: {selectedFeedPost.score.total}</span>
-                      <span className={`font-bold uppercase ${selectedFeedPost.rating === 'e' ? 'text-red-400' : selectedFeedPost.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
-                        {selectedFeedPost.rating === 'e' ? 'Explicit' : selectedFeedPost.rating === 'q' ? 'Questionable' : 'Safe'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex gap-2 mb-4">
+                  {/* Controls - sticky */}
+                  <div className="sticky bottom-0 z-10 p-3 border-t border-[#1d1b2d] bg-[#161621] flex items-center justify-center gap-1.5">
+                    <button onClick={goToPrevFeedPost} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><ChevronLeft className="w-4 h-4" /></button>
+                    <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded transition-colors ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
                     <button
                       onClick={() => ensureFavorite(selectedFeedId ?? -1, selectedFeedPost)}
                       disabled={!!feedActionBusy[selectedFeedPost.id]}
-                      className={`flex-1 px-3 py-2 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 transition-colors ${
                         selectedFeedPost.is_favorited
                           ? 'bg-yellow-500 text-yellow-900'
-                          : (isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80 text-white' : 'bg-purple-600 hover:bg-purple-700 text-white')
+                          : 'bg-[#967abc] hover:bg-[#967abc]/80 text-white'
                       } ${feedActionBusy[selectedFeedPost.id] ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >
                       {feedActionBusy[selectedFeedPost.id] ? <Loader2 className="w-4 h-4 animate-spin" /> : <Star className={`w-4 h-4 ${selectedFeedPost.is_favorited ? 'fill-current' : ''}`} />}
-                      {selectedFeedPost.is_favorited ? 'Favorited' : 'Favorite & Download'}
+                      {selectedFeedPost.is_favorited ? 'Saved' : 'Save'}
                     </button>
                     <button
                       onClick={() => openExternalUrl(`https://e621.net/posts/${selectedFeedPost.id}`)}
-                      className={`px-3 py-2 rounded-xl text-sm ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa]' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+                      className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"
+                      title="Open on e621"
                     >
-                      Open
+                      <Maximize className="w-4 h-4" />
                     </button>
+                    <button onClick={goToNextFeedPost} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><ChevronRight className="w-4 h-4" /></button>
                   </div>
 
-                  {downloadedE621Ids.has(selectedFeedPost.id) && (
-                    <div className={`flex items-center gap-2 text-xs mb-4 px-3 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] text-[#9e98aa]' : 'bg-gray-700 text-gray-400'}`}>
-                      <Database className="w-3.5 h-3.5" />
-                      Already in library
-                    </div>
-                  )}
+                  {/* Info & Tags */}
+                  <div className="p-4">
+                    {downloadedE621Ids.has(selectedFeedPost.id) && (
+                      <div className="flex items-center gap-2 text-xs mb-4 px-3 py-2 rounded-xl bg-[#1d1b2d] text-[#9e98aa]">
+                        <Database className="w-3.5 h-3.5" />
+                        Already in library
+                      </div>
+                    )}
 
-                  {/* Sources */}
-                  {selectedFeedPost.sources && selectedFeedPost.sources.length > 0 && (
-                    <div className={`mb-4 pb-3 border-b ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
-                      <h4 className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>Sources</h4>
-                      <div className="space-y-1">
-                        {selectedFeedPost.sources.map((source, i) => (
-                          <button key={i} onClick={() => openExternalUrl(source)} className={`block text-xs truncate ${isStudio ? 'text-[#967abc] hover:text-[#967abc]/80' : 'text-purple-400 hover:text-purple-300'}`} title={source}>
-                            {getSocialMediaName(source)}
-                          </button>
-                        ))}
+                    <div className="mb-4 pb-3 border-b border-[#1d1b2d]">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider bg-blue-600">E6</span>
+                        <span className="text-sm font-medium truncate text-white">
+                          {(() => {
+                            const artists = selectedFeedPost.tags.artist.filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
+                            return artists.length > 0 ? artists.join(", ") : "Unknown";
+                          })()}
+                        </span>
+                      </div>
+                      <div className="flex gap-3 text-xs text-[#9e98aa]">
+                        <span>⭐ {selectedFeedPost.fav_count}</span>
+                        <span>Score: {selectedFeedPost.score.total}</span>
+                        <span className={`font-bold uppercase ${selectedFeedPost.rating === 'e' ? 'text-red-400' : selectedFeedPost.rating === 'q' ? 'text-yellow-400' : 'text-green-400'}`}>
+                          {selectedFeedPost.rating === 'e' ? 'Explicit' : selectedFeedPost.rating === 'q' ? 'Questionable' : 'Safe'}
+                        </span>
                       </div>
                     </div>
-                  )}
 
-                  {/* Tags */}
-                  <h4 className={`text-xs font-semibold uppercase tracking-wider mb-3 flex items-center gap-2 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}><Tag className="w-3.5 h-3.5" /> Tags</h4>
-                  <TagSection title="Artists" tags={selectedFeedPost.tags.artist} color="text-yellow-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
-                  <TagSection title="Copyrights" tags={selectedFeedPost.tags.copyright} color="text-pink-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
-                  <TagSection title="Characters" tags={selectedFeedPost.tags.character} color="text-green-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
-                  <TagSection title="Species" tags={selectedFeedPost.tags.species} color="text-red-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
-                  <TagSection title="General" tags={selectedFeedPost.tags.general} color="text-blue-300" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
-                  <TagSection title="Meta" tags={selectedFeedPost.tags.meta} color="text-gray-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
-                  <TagSection title="Lore" tags={selectedFeedPost.tags.lore} color="text-purple-300" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setSelectedFeedPost(null); }} />
+                    {selectedFeedPost.sources && selectedFeedPost.sources.length > 0 && (
+                      <div className="mb-4 pb-3 border-b border-[#1d1b2d]">
+                        <h4 className="text-xs font-semibold uppercase tracking-wider mb-2 text-[#9e98aa]">Sources</h4>
+                        <div className="space-y-1">
+                          {selectedFeedPost.sources.map((source, i) => (
+                            <button key={i} onClick={() => openExternalUrl(source)} className="block text-xs truncate text-[#967abc] hover:text-[#967abc]/80" title={source}>
+                              {getSocialMediaName(source)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <h4 className="text-xs font-semibold uppercase tracking-wider mb-3 flex items-center gap-2 text-[#9e98aa]"><Tag className="w-3.5 h-3.5" /> Tags</h4>
+                    <TagSection title="Artists" tags={selectedFeedPost.tags.artist} color="text-yellow-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setFeedDetailOpen(false); setSelectedFeedPost(null); }} />
+                    <TagSection title="Copyrights" tags={selectedFeedPost.tags.copyright} color="text-pink-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setFeedDetailOpen(false); setSelectedFeedPost(null); }} />
+                    <TagSection title="Characters" tags={selectedFeedPost.tags.character} color="text-green-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setFeedDetailOpen(false); setSelectedFeedPost(null); }} />
+                    <TagSection title="Species" tags={selectedFeedPost.tags.species} color="text-red-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setFeedDetailOpen(false); setSelectedFeedPost(null); }} />
+                    <TagSection title="General" tags={selectedFeedPost.tags.general} color="text-blue-300" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setFeedDetailOpen(false); setSelectedFeedPost(null); }} />
+                    <TagSection title="Meta" tags={selectedFeedPost.tags.meta} color="text-gray-400" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setFeedDetailOpen(false); setSelectedFeedPost(null); }} />
+                    <TagSection title="Lore" tags={selectedFeedPost.tags.lore} color="text-purple-300" onTagClick={(tag) => { setFeedSearchInput(tag); searchFeedPosts(tag); setFeedDetailOpen(false); setSelectedFeedPost(null); }} />
+                  </div>
                 </div>
               </div>
             </>
@@ -3305,13 +3101,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               <div className={`border-t pt-4 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
                 <h3 className="text-lg font-semibold mb-2">Viewer</h3>
                   <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm text-gray-400 mb-1 block">Layout</label>
-                    <select value={viewerLayout} onChange={(e) => setViewerLayout(e.target.value as 'classic' | 'studio')} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}>
-                      <option value="classic">Classic</option>
-                      <option value="studio">Studio (Three-pane)</option>
-                    </select>
-                  </div>
                   <div>
                     <label className="text-sm text-gray-400 mb-1 block">Default sort order</label>
                     <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}>
@@ -3748,7 +3537,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       )}
 
       {/* Footer */}
-      <div className={`flex items-center justify-between px-4 py-2 text-xs border-t flex-shrink-0 ${isStudio ? 'bg-[#161621] border-[#1d1b2d] text-[#4c4b5a]' : 'bg-gray-800 border-gray-700 text-gray-500 mt-auto'}`}>
+      <div className="flex items-center justify-between px-4 py-2 text-xs border-t flex-shrink-0 bg-[#161621] border-[#1d1b2d] text-[#4c4b5a]">
         <span>TailBurrow v{APP_VERSION}</span>
         <span>{itemCount} loaded • {totalDatabaseItems} total</span>
         <button onClick={loadTrash} className={`flex items-center gap-1.5 transition-colors ${isStudio ? 'hover:text-[#967abc]' : 'hover:text-white'}`}>
