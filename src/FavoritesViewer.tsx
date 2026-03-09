@@ -825,6 +825,7 @@ export default function FavoritesViewer() {
     Number(localStorage.getItem('feed_detail_width') || 500)
   );
   const feedsContainerRef = useRef<HTMLDivElement>(null);
+  const [feedDetailOpen, setFeedDetailOpen] = useState(false);
 
   // Settings & System
   const [showSettings, setShowSettings] = useState(false);
@@ -1698,6 +1699,31 @@ if (loadingFeedsRef.current[feedId]) return;
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, [showSettings, loadData]);
+
+  // Auto-select first post when switching feeds (only if detail pane is open)
+  const prevFeedIdRef = useRef(selectedFeedId);
+  const pendingFeedSelectRef = useRef<number | null>(null);
+  
+  useEffect(() => {
+    if (selectedFeedId === null || feedSearchInput) return;
+    
+    const feedChanged = prevFeedIdRef.current !== selectedFeedId;
+    prevFeedIdRef.current = selectedFeedId;
+    
+    // When feed changes, mark it as pending if pane is open
+    if (feedChanged && feedDetailOpen) {
+      pendingFeedSelectRef.current = selectedFeedId;
+    }
+    
+    // If we're not waiting for this feed to load, skip
+    if (pendingFeedSelectRef.current !== selectedFeedId) return;
+    
+    const posts = feedPosts[selectedFeedId];
+    if (posts && posts.length > 0) {
+      setSelectedFeedPost(posts[0]);
+      pendingFeedSelectRef.current = null;
+    }
+  }, [selectedFeedId, feedPosts, feedSearchInput, feedDetailOpen]);
 
   // Trash count
   useEffect(() => {
@@ -2589,7 +2615,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {activeTab === 'feeds' && (
         <div ref={feedsContainerRef} className={`flex-1 flex overflow-hidden ${isStudio ? 'bg-[#0f0f17]' : ''}`}>
           {/* Feed grid pane */}
-          <div className={`${selectedFeedPost ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto`} style={selectedFeedPost ? { width: `calc(100% - ${feedDetailWidth}px - 6px)` } : undefined}>
+          <div className={`${feedDetailOpen && selectedFeedPost ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto`} style={feedDetailOpen && selectedFeedPost ? { width: `calc(100% - ${feedDetailWidth}px - 6px)` } : undefined}>
             <div className={isStudio ? "p-4" : "max-w-7xl mx-auto p-4"}>
               {/* Feed pills */}
               <div className="flex justify-center items-center gap-2 mb-4 flex-wrap relative">
@@ -2699,7 +2725,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                               } else {
                                 setFeedSearchInput('');
                                 setFeedSearchResults([]);
-                                setSelectedFeedPost(null);
                                 setSelectedFeedId(feed.id);
                                 if (!feedPosts[feed.id] || feedPosts[feed.id].length === 0) {
                                   fetchFeedPosts(feed.id, feed.query, { reset: true });
@@ -2788,13 +2813,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                 </div>
               ) : feedSearchInput || feedSearchLoading ? (
                 feedSearchLoading ? (
-                  <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                  <Masonry breakpointCols={{ default: feedDetailOpen && selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                     {Array.from({ length: gridColumns * 2 }).map((_, i) => (
                       <SkeletonFeedPost key={`search-skeleton-${i}`} index={i} dark={isStudio} />
                     ))}
                   </Masonry>
                 ) : (
-                  <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                  <Masonry breakpointCols={{ default: feedDetailOpen && selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                     {feedSearchResults.map((post) => (
                       <FeedPostItem
                         key={post.id}
@@ -2803,7 +2828,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         downloaded={downloadedE621Ids.has(post.id)}
                         busy={!!feedActionBusy[post.id]}
                         onFavorite={ensureFavorite}
-                        onSelect={setSelectedFeedPost}
+                        onSelect={(p) => {
+                          setSelectedFeedPost(p);
+                          setFeedDetailOpen(true);
+                        }}
                       />
                     ))}
                   </Masonry>
@@ -2813,7 +2841,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   const feed = feeds.find(f => f.id === selectedFeedId)!;
                   return feedPosts[feed.id] && feedPosts[feed.id].length > 0 ? (
                     <>
-                      <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                  <Masonry breakpointCols={{ default: feedDetailOpen && selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                         {feedPosts[feed.id].map((post) => (
                           <FeedPostItem
                             key={post.id}
@@ -2822,7 +2850,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                             downloaded={downloadedE621Ids.has(post.id)}
                             busy={!!feedActionBusy[post.id]}
                             onFavorite={ensureFavorite}
-                            onSelect={setSelectedFeedPost}
+                            onSelect={(p) => {
+                              setSelectedFeedPost(p);
+                              setFeedDetailOpen(true);
+                            }}
                           />
                         ))}
                       </Masonry>
@@ -2833,7 +2864,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       {feedPaging[feed.id]?.done && <div className={`text-center text-sm py-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>End of results</div>}
                     </>
                   ) : loadingFeeds[feed.id] ? (
-                    <Masonry breakpointCols={{ default: selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
+                  <Masonry breakpointCols={{ default: feedDetailOpen && selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                       {Array.from({ length: gridColumns * 2 }).map((_, i) => (
                         <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} dark={isStudio} />
                       ))}
@@ -2859,14 +2890,17 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           </div>
 
           {/* Detail pane */}
-          {selectedFeedPost && (
+          {feedDetailOpen && selectedFeedPost && (
             <>
               <ResizeHandle onDrag={handleFeedDetailResize} />
               <div style={{ width: feedDetailWidth }} className={`flex-shrink-0 overflow-y-auto ${isStudio ? 'bg-[#161621] border-l border-[#1d1b2d]' : 'bg-gray-800 border-l border-gray-700'}`}>
                 <div className="p-4">
                   {/* Close button */}
                   <button
-                    onClick={() => setSelectedFeedPost(null)}
+                    onClick={() => {
+                      setFeedDetailOpen(false);
+                      setSelectedFeedPost(null);
+                    }}
                     className={`mb-3 p-1.5 rounded-lg transition-colors ${isStudio ? 'hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white' : 'hover:bg-gray-700 text-gray-400 hover:text-white'}`}
                   >
                     <X className="w-4 h-4" />
