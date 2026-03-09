@@ -804,6 +804,19 @@ export default function FavoritesViewer() {
   const [selectedFeedId, setSelectedFeedId] = useState<number | null>(null);
   const [showAddFeedModal, setShowAddFeedModal] = useState(false);
   const [editingFeedId, setEditingFeedId] = useState<number | null>(null);
+  const [feedDrag, setFeedDrag] = useState<{
+    id: number;
+    ghostX: number;
+    ghostY: number;
+    ghostWidth: number;
+    ghostHeight: number;
+    ghostLabel: string;
+    insertIndex: number;
+  } | null>(null);
+  const feedPillRefs = useRef<Map<number, HTMLElement>>(new Map());
+  const feedDragStartRef = useRef<{ x: number; y: number; id: number; index: number } | null>(null);
+  const feedDragRef = useRef(feedDrag);
+  useEffect(() => { feedDragRef.current = feedDrag; }, [feedDrag]);
   const [feedSearchInput, setFeedSearchInput] = useState('');
   const [feedSearchResults, setFeedSearchResults] = useState<E621Post[]>([]);
   const [feedSearchLoading, setFeedSearchLoading] = useState(false);
@@ -2579,48 +2592,161 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           <div className={`${selectedFeedPost ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto`} style={selectedFeedPost ? { width: `calc(100% - ${feedDetailWidth}px - 6px)` } : undefined}>
             <div className={isStudio ? "p-4" : "max-w-7xl mx-auto p-4"}>
               {/* Feed pills */}
-              <div className="flex justify-center items-center gap-2 mb-4 flex-wrap">
-                {feeds.map((feed) => {
+              <div className="flex justify-center items-center gap-2 mb-4 flex-wrap relative">
+                {feeds.map((feed, index) => {
                   const isActive = selectedFeedId === feed.id && !feedSearchInput;
+                  const isDragging = feedDrag?.id === feed.id;
+                  const insertBefore = feedDrag && feedDrag.id !== feed.id && feedDrag.insertIndex === index;
+                  const insertAfter = feedDrag && feedDrag.id !== feed.id && feedDrag.insertIndex === index + 1 && index === feeds.length - 1;
+
                   return (
-                    <button
+                    <div
                       key={feed.id}
-                      onClick={() => {
-                        if (isActive) {
-                          fetchFeedPosts(feed.id, feed.query, { reset: true });
-                        } else {
-                          setFeedSearchInput('');
-                          setFeedSearchResults([]);
-                          setSelectedFeedPost(null);
-                          setSelectedFeedId(feed.id);
-                          if (!feedPosts[feed.id] || feedPosts[feed.id].length === 0) {
-                            fetchFeedPosts(feed.id, feed.query, { reset: true });
-                          }
-                        }
-                      }}
-                      className={`px-4 py-2 rounded-full text-sm font-medium transition-all group ${
-                        isActive
-                          ? (isStudio ? 'bg-[#967abc] text-white shadow-lg' : 'bg-purple-600 text-white shadow-lg')
-                          : (isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
-                      }`}
+                      className="flex items-center"
+                      style={{ transition: isDragging ? 'none' : 'all 200ms ease' }}
                     >
-                      <span className="flex items-center gap-1.5">
-                        {feed.name}
-                        {isActive && loadingFeeds[feed.id] && <Loader2 className="w-3 h-3 animate-spin" />}
-                        <span
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setNewFeedName(feed.name);
-                            setNewFeedQuery(feed.query);
-                            setEditingFeedId(feed.id);
-                            setShowAddFeedModal(true);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-white/20 rounded"
-                        >
-                          <Pencil className="w-3 h-3" />
+                      {/* Insert indicator before */}
+                      <div
+                        className={`transition-all duration-200 ease-out rounded-full ${
+                          insertBefore
+                            ? (isStudio ? 'w-1 h-8 bg-[#967abc] mx-1' : 'w-1 h-8 bg-purple-500 mx-1')
+                            : 'w-0 h-8 mx-0'
+                        }`}
+                      />
+                      <button
+                        ref={(el) => {
+                          if (el) feedPillRefs.current.set(feed.id, el);
+                          else feedPillRefs.current.delete(feed.id);
+                        }}
+                        onPointerDown={(e) => {
+                          if (e.button !== 0) return;
+                          e.preventDefault();
+                          feedDragStartRef.current = { x: e.clientX, y: e.clientY, id: feed.id, index };
+                          const el = e.currentTarget;
+
+                          const onMove = (ev: PointerEvent) => {
+                            const start = feedDragStartRef.current;
+                            if (!start) return;
+                            const dx = Math.abs(ev.clientX - start.x);
+                            const dy = Math.abs(ev.clientY - start.y);
+
+                            if (!feedDrag && dx < 5 && dy < 5) return;
+
+                            const rect = el.getBoundingClientRect();
+
+                            // Find insert position
+                            let insertIdx = start.index;
+                            const pills = feeds.map((f, i) => {
+                              const pillEl = feedPillRefs.current.get(f.id);
+                              if (!pillEl || f.id === start.id) return null;
+                              const r = pillEl.getBoundingClientRect();
+                              return { index: i, cx: r.left + r.width / 2 };
+                            }).filter(Boolean) as { index: number; cx: number }[];
+
+                            // Determine where the cursor is relative to other pills
+                            if (pills.length > 0) {
+                              if (ev.clientX <= pills[0].cx) {
+                                insertIdx = pills[0].index;
+                              } else if (ev.clientX >= pills[pills.length - 1].cx) {
+                                insertIdx = pills[pills.length - 1].index + 1;
+                              } else {
+                                for (let i = 0; i < pills.length - 1; i++) {
+                                  if (ev.clientX >= pills[i].cx && ev.clientX < pills[i + 1].cx) {
+                                    insertIdx = pills[i + 1].index;
+                                    break;
+                                  }
+                                }
+                              }
+                              // Adjust for the dragged item's original position
+                              if (insertIdx > start.index) {
+                                // When dragging right, account for the gap left by the dragged item
+                              }
+                            }
+
+                            setFeedDrag({
+                              id: start.id,
+                              ghostX: ev.clientX,
+                              ghostY: ev.clientY,
+                              ghostWidth: rect.width,
+                              ghostHeight: rect.height,
+                              ghostLabel: feed.name,
+                              insertIndex: insertIdx,
+                            });
+                          };
+
+                          const onUp = () => {
+                            document.removeEventListener('pointermove', onMove);
+                            document.removeEventListener('pointerup', onUp);
+
+                            const start = feedDragStartRef.current;
+                            const drag = feedDragRef.current;
+
+                            if (start && drag) {
+                              // Perform reorder
+                              const fromIdx = feeds.findIndex(f => f.id === start.id);
+                              let toIdx = drag.insertIndex;
+                              if (fromIdx !== -1 && toIdx !== fromIdx) {
+                                const reordered = [...feeds];
+                                const [moved] = reordered.splice(fromIdx, 1);
+                                if (toIdx > fromIdx) toIdx--;
+                                reordered.splice(toIdx, 0, moved);
+                                saveFeeds(reordered);
+                              }
+                            } else if (start && !drag) {
+                              // It was a click
+                              if (isActive) {
+                                fetchFeedPosts(feed.id, feed.query, { reset: true });
+                              } else {
+                                setFeedSearchInput('');
+                                setFeedSearchResults([]);
+                                setSelectedFeedPost(null);
+                                setSelectedFeedId(feed.id);
+                                if (!feedPosts[feed.id] || feedPosts[feed.id].length === 0) {
+                                  fetchFeedPosts(feed.id, feed.query, { reset: true });
+                                }
+                              }
+                            }
+
+                            feedDragStartRef.current = null;
+                            setFeedDrag(null);
+                          };
+
+                          document.addEventListener('pointermove', onMove);
+                          document.addEventListener('pointerup', onUp);
+                        }}
+                        className={`px-4 py-2 rounded-full text-sm font-medium transition-all group select-none touch-none ${
+                          isDragging
+                            ? 'opacity-30 scale-95'
+                            : isActive
+                            ? (isStudio ? 'bg-[#967abc] text-white shadow-lg' : 'bg-purple-600 text-white shadow-lg')
+                            : (isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
+                        }`}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span className="pointer-events-none">{feed.name}</span>
+                          {isActive && loadingFeeds[feed.id] && <Loader2 className="w-3 h-3 animate-spin pointer-events-none" />}
+                          <span
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setNewFeedName(feed.name);
+                              setNewFeedQuery(feed.query);
+                              setEditingFeedId(feed.id);
+                              setShowAddFeedModal(true);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-white/20 rounded pointer-events-auto"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </span>
                         </span>
-                      </span>
-                    </button>
+                      </button>
+                      {/* Insert indicator after last item */}
+                      {insertAfter && (
+                        <div className={`transition-all duration-200 ease-out rounded-full ${
+                          isStudio ? 'w-1 h-8 bg-[#967abc] mx-1' : 'w-1 h-8 bg-purple-500 mx-1'
+                        }`} />
+                      )}
+                    </div>
                   );
                 })}
                 <button
@@ -2630,6 +2756,29 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   <Plus className="w-4 h-4" />
                 </button>
               </div>
+
+              {/* Floating ghost pill */}
+              {feedDrag && createPortal(
+                <div
+                  className={`fixed z-[9999] pointer-events-none px-4 py-2 rounded-full text-sm font-medium shadow-2xl ${
+                    isStudio ? 'bg-[#967abc] text-white' : 'bg-purple-600 text-white'
+                  }`}
+                  style={{
+                    left: feedDrag.ghostX - feedDrag.ghostWidth / 2,
+                    top: feedDrag.ghostY - feedDrag.ghostHeight / 2,
+                    width: feedDrag.ghostWidth,
+                    height: feedDrag.ghostHeight,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transform: 'scale(1.08)',
+                    transition: 'transform 100ms ease',
+                  }}
+                >
+                  {feedDrag.ghostLabel}
+                </div>,
+                document.body
+              )}
 
               {/* Feed content */}
               {feedSearchInput && !feedSearchLoading && feedSearchResults.length === 0 ? (
