@@ -2277,21 +2277,17 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
             <>
               <ResizeHandle onDrag={handleLibraryDetailResize} />
               <div style={{ width: libraryDetailWidth }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
-                {/* Header */}
-                <div className="flex-shrink-0 p-3 border-b border-[#1d1b2d] flex items-center justify-between">
-                  <span className="text-xs text-[#4c4b5a]">{currentIndex + 1} / {itemCount}</span>
-                  <button
-                    onClick={() => setLibraryDetailOpen(false)}
-                    className="p-1.5 rounded-lg transition-colors hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
 
                 {/* Everything below header scrolls together */}
                 <div className="flex-1 min-h-0 overflow-y-auto">
                   {/* Media */}
-                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 170px)', minHeight: '300px' }}>
+                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 120px)', minHeight: '300px' }}>
+                    <button
+                      onClick={() => setLibraryDetailOpen(false)}
+                      className="absolute top-2 right-2 z-20 p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
                     {imageLoading && (
                       <div className="absolute inset-0 flex items-center justify-center z-10">
                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#967abc]" />
@@ -2680,24 +2676,20 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
             <>
               <ResizeHandle onDrag={handleFeedDetailResize} />
               <div style={{ width: feedDetailWidth }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
-                {/* Header */}
-                <div className="flex-shrink-0 p-3 border-b border-[#1d1b2d] flex items-center justify-between">
-                  <span className="text-xs text-[#4c4b5a]">{feedPostIndex + 1} / {currentFeedPosts.length}</span>
-                  <button
-                    onClick={() => {
-                      setFeedDetailOpen(false);
-                      setSelectedFeedPost(null);
-                    }}
-                    className="p-1.5 rounded-lg transition-colors hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
 
                 {/* Everything below header scrolls together */}
                 <div className="flex-1 min-h-0 overflow-y-auto">
                   {/* Media */}
-                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 170px)', minHeight: '300px' }}>
+                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 120px)', minHeight: '300px' }}>
+                    <button
+                      onClick={() => {
+                        setFeedDetailOpen(false);
+                        setSelectedFeedPost(null);
+                      }}
+                      className="absolute top-2 right-2 z-20 p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
                     {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
                       <video
                         key={selectedFeedPost.id}
@@ -2744,7 +2736,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     </button>
                     <button onClick={goToNextFeedPost} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><ChevronRight className="w-4 h-4" /></button>
                   </div>
-
                   {/* Info & Tags */}
                   <div className="p-4">
                     {downloadedE621Ids.has(selectedFeedPost.id) && (
