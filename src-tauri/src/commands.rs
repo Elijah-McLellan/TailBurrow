@@ -1918,6 +1918,155 @@ pub fn clear_safe_pin(pin: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn import_local_files(
+    app: AppHandle,
+    file_paths: Vec<String>,
+    tags: Vec<String>,
+    rating: String,
+    sources: Vec<String>,
+) -> Result<usize, String> {
+    let root = get_root(&app)?;
+    library::ensure_layout(&root)?;
+
+    let media_dir = root.join("media");
+    let r = match rating.to_lowercase().as_str() {
+        "s" | "q" | "e" => rating.to_lowercase(),
+        _ => "s".to_string(),
+    };
+
+    let mut imported: usize = 0;
+
+    for file_path in &file_paths {
+        let src_path = PathBuf::from(file_path);
+        if !src_path.exists() {
+            continue;
+        }
+
+        // ── Read file bytes & compute MD5 ──
+        let file_bytes = fs::read(&src_path)
+            .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
+        let md5_hash = format!("{:x}", md5::compute(&file_bytes));
+
+        // ── Extension ──
+        let ext = src_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_else(|| "bin".to_string());
+
+        // ── Dedup by MD5 ──
+        {
+            let dedup_conn = db::open(&library::db_path(&root))?;
+            db::init_schema(&dedup_conn)?;
+
+            let md5_exists: i64 = dedup_conn
+                .query_row(
+                    "SELECT COUNT(*) FROM items WHERE md5 = ? AND trashed_at IS NULL",
+                    params![md5_hash],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+
+            if md5_exists > 0 {
+                continue;
+            }
+        }
+
+        // ── Use MD5 as source_id (content-addressed) ──
+        let source_id = md5_hash.clone();
+
+        // ── Build destination path ──
+        let base_filename = format!("local_{}.{}", &source_id[..12], ext);
+        let mut filename = base_filename.clone();
+        let mut dest_path = media_dir.join(&filename);
+
+        let mut n = 1u32;
+        while dest_path.exists() {
+            filename = format!("local_{}_dup{}.{}", &source_id[..12], n, ext);
+            dest_path = media_dir.join(&filename);
+            n += 1;
+        }
+
+        // ── Copy file into library ──
+        fs::write(&dest_path, &file_bytes)
+            .map_err(|e| format!("Failed to write {}: {}", dest_path.display(), e))?;
+
+        // ── Generate thumbnail ──
+        let file_rel = format!("media/{}", filename);
+        generate_and_save_thumb(&root, &file_rel);
+
+        // ── DB insert (with cleanup on failure) ──
+        let cleanup_path = dest_path.clone();
+        let db_result = (|| -> Result<(), String> {
+            let added_at = Utc::now().to_rfc3339();
+
+            let mut conn = db::open(&library::db_path(&root))?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+            tx.execute(
+                r#"
+                INSERT INTO items(
+                    source, source_id, md5, remote_url, file_rel, ext,
+                    rating, fav_count, score_total, created_at, added_at, primary_artist
+                )
+                VALUES('local', ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?, 'local')
+                "#,
+                params![
+                    source_id,
+                    md5_hash,
+                    file_rel,
+                    ext,
+                    r,
+                    added_at,
+                    added_at,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            let item_id = tx.last_insert_rowid();
+
+            // Insert tags (all as "general" type)
+            let import_tags = E621Tags {
+                general: tags.iter().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect(),
+                species: vec![],
+                character: vec![],
+                artist: vec![],
+                meta: vec![],
+                lore: vec![],
+                copyright: vec![],
+            };
+            insert_tags_for_item(&tx, item_id, &import_tags)?;
+
+            // Insert sources
+            for url in &sources {
+                let trimmed = url.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let sid = upsert_source(&tx, trimmed)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?, ?)",
+                    params![item_id, sid],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+
+        if let Err(e) = db_result {
+            let _ = fs::remove_file(&cleanup_path);
+            return Err(format!("Failed to import {}: {}", file_path, e));
+        }
+
+        imported += 1;
+    }
+
+    Ok(imported)
+}
+
 // Prune items trashed more than 30 days ago
 pub fn prune_expired_trash(app: &tauri::AppHandle) -> Result<(), String> {
     let root = match get_root(app) {

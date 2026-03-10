@@ -90,6 +90,7 @@ pub fn run() {
       commands::load_pools_cache,
       commands::clear_pools_cache,
       commands::proxy_remote_media,
+      commands::import_local_files,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
