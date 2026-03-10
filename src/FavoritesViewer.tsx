@@ -376,11 +376,13 @@ function InfiniteSentinel({ onVisible, disabled }: { onVisible: () => void; disa
   return <div ref={ref} className="h-10 w-full" />;
 }
 
-const GridItem = React.memo(({ item, index, onSelect, isSelected }: {
+const GridItem = React.memo(({ item, index, onSelect, isSelected, isMultiSelected, onMultiClick }: {
   item: LibraryItem;
   index: number;
   onSelect: (index: number) => void;
   isSelected?: boolean;
+  isMultiSelected?: boolean;
+  onMultiClick?: (index: number, e: React.MouseEvent) => void;
 }) => {
   const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -420,10 +422,52 @@ const GridItem = React.memo(({ item, index, onSelect, isSelected }: {
     }
   }, []);
 
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      onMultiClick?.(index, e);
+    } else {
+      onSelect(index);
+    }
+  }, [index, onSelect, onMultiClick]);
+
   return (
     <div
-      onClick={() => onSelect(index)}
-      className={`relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition-all ${isSelected ? 'ring-2 ring-purple-500 border border-purple-500' : 'border border-gray-700 hover:border-purple-500'}`}    >
+      onClick={handleClick}
+      className={`relative group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition-all ${
+        isMultiSelected
+          ? 'ring-2 ring-yellow-400 border border-yellow-400'
+          : isSelected
+          ? 'ring-2 ring-purple-500 border border-purple-500'
+          : 'border border-gray-700 hover:border-purple-500'
+      }`}
+    >
+      {/* Selection checkbox */}
+      {isMultiSelected !== undefined && (
+        <div
+          className={`absolute top-2 left-2 z-10 w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+            isMultiSelected
+              ? 'bg-yellow-400 border-yellow-400'
+              : 'border-white/30 bg-black/30 opacity-0 group-hover:opacity-100'
+          }`}
+          onClick={(e) => {
+              e.stopPropagation();
+              onMultiClick?.(index, {
+                  ctrlKey: true,
+                  metaKey: false,
+                  shiftKey: false,
+                  preventDefault: () => {},
+                  stopPropagation: () => {},
+              } as unknown as React.MouseEvent);
+          }}
+        >
+          {isMultiSelected && (
+            <svg className="w-3 h-3 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+        </div>
+      )}
+
       {isVid ? (
         <div className="relative">
           <video
@@ -817,6 +861,11 @@ export default function FavoritesViewer() {
   const feedsContainerRef = useRef<HTMLDivElement>(null);
   const [feedDetailOpen, setFeedDetailOpen] = useState(false);
   const [libraryDetailOpen, setLibraryDetailOpen] = useState(false);
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(new Set());
+  const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
+  const [showBulkTagModal, setShowBulkTagModal] = useState(false);
+  const [bulkTagInput, setBulkTagInput] = useState('');
+  const [bulkTagMode, setBulkTagMode] = useState<'add' | 'remove'>('add');
 
   // Settings & System
   const [showSettings, setShowSettings] = useState(false);
@@ -1065,6 +1114,14 @@ export default function FavoritesViewer() {
       });
     }
   }, [viewerOverlay, pokeHud]);
+
+  const selectAll = useCallback(() => {
+    setSelectedItemIds(new Set(items.map(i => i.item_id)));
+  }, [items]);
+
+  const deselectAll = useCallback(() => {
+    setSelectedItemIds(new Set());
+  }, []);
 
   // --- SYNC ---
   const refreshSyncStatus = useCallback(async () => {
@@ -1739,6 +1796,8 @@ if (loadingFeedsRef.current[feedId]) return;
           return;
         }
         if (activeTab === 'comics' && selectedPool) { closePool(); return; }
+        if (showBulkTagModal) { setShowBulkTagModal(false); return; }
+        if (selectedItemIds.size > 0) { deselectAll(); return; }
         if (activeTab === 'viewer' && libraryDetailOpen) { setLibraryDetailOpen(false); return; }
       }
       // Comic zoom: Ctrl+ / Ctrl-
@@ -1756,6 +1815,12 @@ if (loadingFeedsRef.current[feedId]) return;
       }
 
       if (key === "s") { e.preventDefault(); setShowSettings(prev => !prev); }
+      // Bulk select all: Ctrl+A in library
+      if (activeTab === 'viewer' && key === "a" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        selectAll();
+        return;
+      }
       if (key === "l" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         if (hasLock) {
@@ -1797,7 +1862,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, selectedPool, closePool, confirmModal]);
+  }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal, showSettings, showEditModal, showTrashModal, showAddFeedModal, selectedPool, closePool, confirmModal, libraryDetailOpen, selectedItemIds, deselectAll, selectAll, showBulkTagModal]);
 
   // HUD management
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
@@ -1922,6 +1987,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
     if (!initialLoading) {
       setItems([]);
+      setSelectedItemIds(new Set());
       setHasMoreItems(true);
       loadData(false);
     }
@@ -1975,6 +2041,129 @@ if (loadingFeedsRef.current[feedId]) return;
     setCurrentIndex(index);
     setLibraryDetailOpen(true);
   }, []);
+  const handleGridClick = useCallback((index: number, e: React.MouseEvent) => {
+    const item = items[index];
+    if (!item) return;
+
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl+click: toggle individual
+      e.preventDefault();
+      setSelectedItemIds(prev => {
+        const next = new Set(prev);
+        if (next.has(item.item_id)) {
+          next.delete(item.item_id);
+        } else {
+          next.add(item.item_id);
+        }
+        return next;
+      });
+      setLastClickedIndex(index);
+      return;
+    }
+
+    if (e.shiftKey && lastClickedIndex !== null) {
+      // Shift+click: range select
+      e.preventDefault();
+      const start = Math.min(lastClickedIndex, index);
+      const end = Math.max(lastClickedIndex, index);
+      setSelectedItemIds(prev => {
+        const next = new Set(prev);
+        for (let i = start; i <= end; i++) {
+          if (items[i]) next.add(items[i].item_id);
+        }
+        return next;
+      });
+      return;
+    }
+
+    // Normal click: open detail pane, clear selection
+    if (selectedItemIds.size > 0) {
+      setSelectedItemIds(new Set());
+    }
+    setLastClickedIndex(index);
+    handleItemSelect(index);
+  }, [items, lastClickedIndex, selectedItemIds, handleItemSelect]);
+
+  const bulkTrash = useCallback(async () => {
+    if (selectedItemIds.size === 0) return;
+    const ids = Array.from(selectedItemIds);
+
+    for (const id of ids) {
+      await invoke("trash_item", { itemId: id });
+    }
+
+    setTrashCount(prev => prev + ids.length);
+
+    // Use ids array (captured above) instead of selectedItemIds Set directly
+    const idSet = new Set(ids);
+    setItems(prev => {
+      const next = prev.filter(i => !idSet.has(i.item_id));
+      setCurrentIndex(ci => {
+        if (next.length === 0) return 0;
+        return Math.min(ci, next.length - 1);
+      });
+      return next;
+    });
+
+    setSelectedItemIds(new Set());
+    toast(`Moved ${ids.length} items to trash.`, "success");
+  }, [selectedItemIds, toast]);
+
+  const bulkAddTag = useCallback(async () => {
+    const tag = bulkTagInput.trim().toLowerCase();
+    if (!tag || selectedItemIds.size === 0) return;
+    const ids = Array.from(selectedItemIds);
+    for (const id of ids) {
+      const item = items.find(i => i.item_id === id);
+      if (!item) continue;
+      const currentTags = [...(item.tags || [])];
+      if (!currentTags.includes(tag)) {
+        currentTags.push(tag);
+        await invoke("update_item_tags", { itemId: id, tags: currentTags });
+      }
+    }
+    // Refresh items
+    setItems(prev => prev.map(item => {
+      if (selectedItemIds.has(item.item_id) && !item.tags.includes(tag)) {
+        return { ...item, tags: [...item.tags, tag], tags_general: [...item.tags_general, tag] };
+      }
+      return item;
+    }));
+    setBulkTagInput('');
+    setShowBulkTagModal(false);
+    toast(`Added "${tag}" to ${ids.length} items.`, "success");
+  }, [bulkTagInput, selectedItemIds, items, toast]);
+
+  const bulkRemoveTag = useCallback(async () => {
+    const tag = bulkTagInput.trim().toLowerCase();
+    if (!tag || selectedItemIds.size === 0) return;
+    const ids = Array.from(selectedItemIds);
+    for (const id of ids) {
+      const item = items.find(i => i.item_id === id);
+      if (!item) continue;
+      const currentTags = (item.tags || []).filter(t => t !== tag);
+      await invoke("update_item_tags", { itemId: id, tags: currentTags });
+    }
+    setItems(prev => prev.map(item => {
+      if (selectedItemIds.has(item.item_id)) {
+        return {
+          ...item,
+          tags: item.tags.filter(t => t !== tag),
+          tags_general: item.tags_general.filter(t => t !== tag),
+          tags_artist: item.tags_artist.filter(t => t !== tag),
+          tags_character: item.tags_character.filter(t => t !== tag),
+          tags_copyright: item.tags_copyright.filter(t => t !== tag),
+          tags_species: item.tags_species.filter(t => t !== tag),
+          tags_meta: item.tags_meta.filter(t => t !== tag),
+          tags_lore: item.tags_lore.filter(t => t !== tag),
+        };
+      }
+      return item;
+    }));
+    setBulkTagInput('');
+    setShowBulkTagModal(false);
+    toast(`Removed "${tag}" from ${ids.length} items.`, "success");
+  }, [bulkTagInput, selectedItemIds, items, toast]);
 
   const handleLibraryDetailResize = useCallback((clientX: number) => {
     const containerWidth = window.innerWidth;
@@ -2198,7 +2387,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {activeTab === 'viewer' && (
         <div className="flex-1 flex overflow-hidden bg-[#0f0f17]">
           {/* Grid */}
-          <div className={`${libraryDetailOpen && currentItem ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto overflow-x-hidden`} style={libraryDetailOpen && currentItem ? { width: `calc(100% - ${libraryDetailWidth}px - 6px)` } : undefined}>
+          <div className={`${libraryDetailOpen && currentItem ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto overflow-x-hidden relative`} style={libraryDetailOpen && currentItem ? { width: `calc(100% - ${libraryDetailWidth}px - 6px)` } : undefined}>
             {/* Selected tags bar */}
             {selectedTags.length > 0 && (
               <div className="px-4 py-2 flex gap-2 flex-wrap border-b border-[#1d1b2d] bg-[#161621]">
@@ -2233,8 +2422,15 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         key={item.item_id}
                         item={item}
                         index={index}
-                        onSelect={handleItemSelect}
+                        onSelect={(i) => {
+                          if (selectedItemIds.size > 0) {
+                            setSelectedItemIds(new Set());
+                          }
+                          handleItemSelect(i);
+                        }}
                         isSelected={libraryDetailOpen && index === currentIndex}
+                        isMultiSelected={selectedItemIds.has(item.item_id)}
+                        onMultiClick={handleGridClick}
                       />
                     ))}
                     {isLoadingMore && Array.from({ length: gridColumns * 2 }).map((_, i) => (
@@ -2270,6 +2466,67 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                 </div>
               )}
             </div>
+
+            {/* Bulk Action Bar */}
+            {selectedItemIds.size > 0 && (
+              <div className="sticky bottom-4 z-30 flex justify-center pointer-events-none">
+                <div className="pointer-events-auto flex items-center gap-2 px-4 py-3 rounded-2xl bg-[#161621]/95 backdrop-blur-md border border-[#1d1b2d] shadow-2xl animate-in slide-in-from-bottom-4 fade-in duration-200">
+                  <span className="text-sm font-medium text-white mr-1">
+                    {selectedItemIds.size} selected
+                  </span>
+
+                  <div className="w-px h-6 bg-[#1d1b2d]" />
+
+                  <button
+                    onClick={selectAll}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa] hover:text-white transition-colors"
+                  >
+                    Select All
+                  </button>
+
+                  <button
+                    onClick={() => { setBulkTagMode('add'); setBulkTagInput(''); setShowBulkTagModal(true); }}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-[#967abc] hover:bg-[#967abc]/80 text-white transition-colors flex items-center gap-1.5"
+                  >
+                    <Tag className="w-3.5 h-3.5" />
+                    Add Tag
+                  </button>
+
+                  <button
+                    onClick={() => { setBulkTagMode('remove'); setBulkTagInput(''); setShowBulkTagModal(true); }}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa] hover:text-white transition-colors flex items-center gap-1.5"
+                  >
+                    <Tag className="w-3.5 h-3.5" />
+                    Remove Tag
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setConfirmModal({
+                        title: "Bulk Trash",
+                        message: `Move ${selectedItemIds.size} selected items to trash?`,
+                        okLabel: "Move to Trash",
+                        onConfirm: bulkTrash,
+                      });
+                    }}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-900/50 hover:bg-red-600 text-red-200 hover:text-white transition-colors flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Trash
+                  </button>
+
+                  <div className="w-px h-6 bg-[#1d1b2d]" />
+
+                  <button
+                    onClick={deselectAll}
+                    className="p-1.5 rounded-lg hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white transition-colors"
+                    title="Clear selection"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Detail Pane */}
@@ -3546,6 +3803,58 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         hidden={shouldHideAutoscroll}
         isStudio={isStudio}
       />
+      {/* Bulk Tag Modal */}
+      {showBulkTagModal && (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowBulkTagModal(false)} />
+          <div className="relative z-10 w-full max-w-md rounded-xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-150 bg-[#161621] border border-[#1d1b2d]">
+            <h3 className="text-lg font-bold mb-2">
+              {bulkTagMode === 'add' ? 'Add Tag to' : 'Remove Tag from'} {selectedItemIds.size} Items
+            </h3>
+            <p className="text-sm text-[#9e98aa] mb-4">
+              {bulkTagMode === 'add'
+                ? 'This tag will be added to all selected items.'
+                : 'This tag will be removed from all selected items.'}
+            </p>
+            <input
+              type="text"
+              placeholder="Enter tag..."
+              value={bulkTagInput}
+              onChange={(e) => setBulkTagInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (bulkTagMode === 'add') bulkAddTag();
+                  else bulkRemoveTag();
+                }
+              }}
+              autoFocus
+              className="w-full px-4 py-2.5 rounded-xl mb-4 focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]"
+            />
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowBulkTagModal(false)}
+                className="px-4 py-2 rounded-xl transition-colors bg-[#1d1b2d] hover:bg-[#4c4b5a]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (bulkTagMode === 'add') bulkAddTag();
+                  else bulkRemoveTag();
+                }}
+                disabled={!bulkTagInput.trim()}
+                className={`px-4 py-2 rounded-xl font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  bulkTagMode === 'add'
+                    ? 'bg-[#967abc] hover:bg-[#967abc]/80 text-white'
+                    : 'bg-red-600 hover:bg-red-700 text-white'
+                }`}
+              >
+                {bulkTagMode === 'add' ? 'Add Tag' : 'Remove Tag'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmModal && (
         <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmModal(null)} />
