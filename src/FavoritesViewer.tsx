@@ -1022,6 +1022,7 @@ export default function FavoritesViewer() {
   const itemCount = items.length;
   const ext = (currentItem?.ext || "").toLowerCase();
   const isVideo = ext === "mp4" || ext === "webm";
+  const pendingTagSearchRef = useRef(false);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -1426,6 +1427,11 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [loadData]);
 
   const toggleTag = useCallback((tag: string) => {
+    setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  }, []);
+
+  const toggleTagAndSearch = useCallback((tag: string) => {
+    pendingTagSearchRef.current = true;
     setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
   }, []);
 
@@ -2165,7 +2171,7 @@ if (loadingFeedsRef.current[feedId]) return;
   const isFirstMountRef = useRef(true);
   const filterKeyRef = useRef("");
   useEffect(() => {
-    const key = `${sortOrder}|${filterSource}|${selectedTags.join(",")}|${safeMode}`;
+    const key = `${sortOrder}|${filterSource}|${safeMode}`;
     if (filterKeyRef.current === key) return;
     filterKeyRef.current = key;
 
@@ -2181,7 +2187,7 @@ if (loadingFeedsRef.current[feedId]) return;
       loadData(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortOrder, filterSource, selectedTags, safeMode]);
+  }, [sortOrder, filterSource, safeMode]);
 
   // Autoscroll
   const autoscrollTargetRef = useRef<HTMLElement | null>(null);
@@ -2266,6 +2272,16 @@ if (loadingFeedsRef.current[feedId]) return;
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, [showSettings, settingsTab, deletedCheckStatus?.running, metaUpdateStatus?.running, faUpgradeStatus?.running, loadData]);
+
+  // Tag search — only fires when explicitly requested
+  useEffect(() => {
+    if (!pendingTagSearchRef.current) return;
+    pendingTagSearchRef.current = false;
+    setItems([]);
+    setSelectedItemIds(new Set());
+    setHasMoreItems(true);
+    loadData(false);
+  }, [selectedTags, loadData]);
 
   // --- RENDER HELPERS ---
   const handleItemSelect = useCallback((index: number) => {
@@ -2482,27 +2498,77 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               {activeTab === 'viewer' || activeTab === 'comics' ? (
                 <>
                   <div className="flex-1 min-w-[150px] relative">
-                    <Search className={`absolute left-3 top-2 w-3.5 h-3.5 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`} />
-                    <input
-                      type="text"
-                      placeholder={activeTab === 'comics' ? "Search comics by name or pool:12345" : "Search tags..."}
-                      value={activeTab === 'comics' ? comicSearchInput : searchTags}
-                      onChange={(e) => {
-                        if (activeTab === 'comics') {
-                          setComicSearchInput(e.target.value);
-                        } else {
-                          setSearchTags(e.target.value);
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && activeTab === 'viewer') {
-                          setItems([]);
-                          setHasMoreItems(true);
-                          loadData(false);
-                        }
-                      }}
-                      className={`w-full pl-9 pr-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}
-                    />
+                    {activeTab === 'comics' && (
+                      <Search className="absolute left-3 top-2 w-3.5 h-3.5 text-[#4c4b5a]" />
+                    )}
+                      {activeTab === 'comics' ? (
+                        <input
+                          type="text"
+                          placeholder="Search comics by name or pool:12345"
+                          value={comicSearchInput}
+                          onChange={(e) => setComicSearchInput(e.target.value)}
+                          className="w-full pl-9 pr-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]"
+                        />
+                      ) : (
+                        <div className="w-full relative flex items-center flex-wrap gap-1 min-h-[34px] pl-9 pr-3 py-1 rounded-xl bg-[#1c1b26] border border-[#1d1b2d] focus-within:border-[#967abc] transition-colors">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#4c4b5a] pointer-events-none" />
+                          {selectedTags.map(tag => (
+                            <span
+                              key={tag}
+                              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[#967abc]/25 text-[#967abc] border border-[#967abc]/30"
+                            >
+                              {tag}
+                              <button
+                                onClick={() => toggleTag(tag)}
+                                className="transition-colors"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </span>
+                          ))}
+                          <input
+                            type="text"
+                            placeholder={selectedTags.length === 0 ? "Search tags..." : ""}
+                            value={searchTags}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              // Check if user typed a space — tokenize
+                              if (val.endsWith(' ')) {
+                                const tag = val.trim().toLowerCase();
+                                if (tag && !selectedTags.includes(tag)) {
+                                  setSelectedTags(prev => [...prev, tag]);
+                                }
+                                setSearchTags('');
+                              } else {
+                                setSearchTags(val);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                const tag = searchTags.trim().toLowerCase();
+                                if (tag && !selectedTags.includes(tag)) {
+                                  // Add tag and trigger search
+                                  pendingTagSearchRef.current = true;
+                                  setSelectedTags(prev => [...prev, tag]);
+                                  setSearchTags('');
+                                } else {
+                                  // No new tag — search with current pills
+                                  setSearchTags('');
+                                  setItems([]);
+                                  setSelectedItemIds(new Set());
+                                  setHasMoreItems(true);
+                                  loadData(false);
+                                }
+                              }
+                              if (e.key === 'Backspace' && searchTags === '' && selectedTags.length > 0) {
+                                setSelectedTags(prev => prev.slice(0, -1));
+                              }
+                            }}
+                            className="flex-1 min-w-[80px] bg-transparent text-sm text-white placeholder-[#4c4b5a] focus:outline-none py-0.5"
+                          />
+                        </div>
+                      )}
                   </div>
                   {activeTab === 'viewer' && (
                     <>
@@ -2628,17 +2694,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         <div className="flex-1 flex overflow-hidden bg-[#0f0f17]">
           {/* Grid */}
           <div className={`${libraryDetailOpen && currentItem ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto overflow-x-hidden relative`} style={libraryDetailOpen && currentItem ? { width: `calc(100% - ${libraryDetailWidth}px - 6px)` } : undefined}>
-            {/* Selected tags bar */}
-            {selectedTags.length > 0 && (
-              <div className="px-4 py-2 flex gap-2 flex-wrap border-b border-[#1d1b2d] bg-[#161621]">
-                {selectedTags.map(tag => (
-                  <button key={tag} onClick={() => toggleTag(tag)} className="px-3 py-1 rounded-full text-sm flex items-center gap-1 bg-[#967abc] hover:bg-[#967abc]/80">
-                    {tag}<X className="w-3 h-3" />
-                  </button>
-                ))}
-              </div>
-            )}
-
             <div className="p-4">
               {(initialLoading || isSearching) ? (
                 <Masonry
@@ -2875,13 +2930,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     </div>
 
                     <h3 className="text-sm font-semibold mb-3 flex items-center gap-2 text-[#9e98aa]"><Tag className="w-3.5 h-3.5" /> Tags</h3>
-                    <TagSection title="Artists" tags={currentItem.tags_artist} color="text-yellow-400" onTagClick={toggleTag} />
-                    <TagSection title="Copyrights" tags={currentItem.tags_copyright} color="text-pink-400" onTagClick={toggleTag} />
-                    <TagSection title="Characters" tags={currentItem.tags_character} color="text-green-400" onTagClick={toggleTag} />
-                    <TagSection title="Species" tags={currentItem.tags_species} color="text-red-400" onTagClick={toggleTag} />
-                    <TagSection title="General" tags={currentItem.tags_general} color="text-blue-300" onTagClick={toggleTag} />
-                    <TagSection title="Meta" tags={currentItem.tags_meta} color="text-gray-400" onTagClick={toggleTag} />
-                    <TagSection title="Lore" tags={currentItem.tags_lore} color="text-purple-300" onTagClick={toggleTag} />
+                    <TagSection title="Artists" tags={currentItem.tags_artist} color="text-yellow-400" onTagClick={toggleTagAndSearch} />
+                    <TagSection title="Copyrights" tags={currentItem.tags_copyright} color="text-pink-400" onTagClick={toggleTagAndSearch} />
+                    <TagSection title="Characters" tags={currentItem.tags_character} color="text-green-400" onTagClick={toggleTagAndSearch} />
+                    <TagSection title="Species" tags={currentItem.tags_species} color="text-red-400" onTagClick={toggleTagAndSearch} />
+                    <TagSection title="General" tags={currentItem.tags_general} color="text-blue-300" onTagClick={toggleTagAndSearch} />
+                    <TagSection title="Meta" tags={currentItem.tags_meta} color="text-gray-400" onTagClick={toggleTagAndSearch} />
+                    <TagSection title="Lore" tags={currentItem.tags_lore} color="text-purple-300" onTagClick={toggleTagAndSearch} />
                   </div>
                 </div>
               </div>
