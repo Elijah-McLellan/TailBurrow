@@ -15,6 +15,7 @@ pub fn run() {
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_fs::init())
     .manage(Arc::new(Mutex::new(commands::SyncState::default())))
+    .manage(Arc::new(commands::MaintenanceState::default()))
     .manage(crate::fa::FAState::new())
     .manage(crate::db::DbPool::new())
     .setup(|app| {
@@ -91,6 +92,15 @@ pub fn run() {
       commands::clear_pools_cache,
       commands::proxy_remote_media,
       commands::import_local_files,
+      commands::maintenance_find_duplicates,
+      commands::maintenance_start_deleted_check,
+      commands::maintenance_deleted_check_status,
+      commands::maintenance_start_metadata_update,
+      commands::maintenance_metadata_update_status,
+      commands::maintenance_start_fa_upgrade,
+      commands::maintenance_fa_upgrade_status,
+      commands::maintenance_get_deleted_results,
+      commands::e621_unfavorite,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

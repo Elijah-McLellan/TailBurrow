@@ -149,6 +149,195 @@ pub struct PoolPost {
     pub position: i32,
 }
 
+#[derive(Serialize, Clone, Default)]
+pub struct MaintenanceProgress {
+    pub running: bool,
+    pub current: u32,
+    pub total: u32,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DeletedPostInfo {
+    pub post_id: i64,
+    pub item_id: i64,
+    pub reason: String,
+    pub tag_applied: String,
+}
+
+pub struct MaintenanceState {
+    pub deleted_check: Mutex<MaintenanceProgress>,
+    pub deleted_results: Mutex<Vec<DeletedPostInfo>>,
+    pub metadata_update: Mutex<MaintenanceProgress>,
+    pub fa_upgrade: Mutex<MaintenanceProgress>,
+}
+
+impl Default for MaintenanceState {
+    fn default() -> Self {
+        Self {
+            deleted_check: Mutex::new(MaintenanceProgress::default()),
+            deleted_results: Mutex::new(Vec::new()),
+            metadata_update: Mutex::new(MaintenanceProgress::default()),
+            fa_upgrade: Mutex::new(MaintenanceProgress::default()),
+        }
+    }
+}
+
+fn strip_html_tags(input: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => { in_tag = false; result.push(' '); }
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    // Collapse whitespace and trim
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn extract_deletion_reason(html: &str) -> String {
+    let lower = html.to_lowercase();
+
+    // ── Strategy 1: Find bottom-notices section ──
+    let section_start = lower.find("bottom-notices")
+        .or_else(|| lower.find("this post was deleted"))
+        .or_else(|| lower.find("notice-warning"));
+
+    if let Some(start) = section_start {
+        let chunk_end = (start + 3000).min(html.len());
+        let chunk = &html[start..chunk_end];
+        let chunk_lower = chunk.to_lowercase();
+
+        // Look for "Reason:" (may be inside tags like <b>Reason:</b> or plain text)
+        if let Some(reason_idx) = chunk_lower.find("reason:") {
+            let after_reason = &chunk[reason_idx + 7..];
+            let after_lower = after_reason.to_lowercase();
+
+            let end = after_lower.find("</p>")
+                .or_else(|| after_lower.find("<br"))
+                .or_else(|| after_lower.find("</div>"))
+                .or_else(|| after_lower.find("</span>"))
+                .or_else(|| after_lower.find("</li>"))
+                .unwrap_or(after_reason.len().min(500));
+
+            let text = strip_html_tags(&after_reason[..end]);
+            if !text.is_empty() {
+                // Remove trailing "- Username - X days ago" if present
+                return clean_reason_suffix(&text);
+            }
+        }
+    }
+
+    // ── Strategy 2: Look for [DELETION] marker ──
+    if let Some(idx) = lower.find("[deletion]") {
+        let after = &html[idx + 10..];
+        let after_lower = after.to_lowercase();
+        let end = after_lower.find("</p>")
+            .or_else(|| after_lower.find("<br"))
+            .or_else(|| after_lower.find("</div>"))
+            .or_else(|| after_lower.find("\n"))
+            .unwrap_or(after.len().min(500));
+
+        let text = strip_html_tags(&after[..end]);
+        if !text.is_empty() {
+            return clean_reason_suffix(&text);
+        }
+    }
+
+    // ── Strategy 3: Broad search for "Reason:" anywhere ──
+    if let Some(reason_idx) = lower.find("reason:") {
+        // Make sure this isn't in a script/style tag
+        let before = &lower[..reason_idx];
+        let in_script = before.rfind("<script").unwrap_or(0) > before.rfind("</script").unwrap_or(0);
+        let in_style = before.rfind("<style").unwrap_or(0) > before.rfind("</style").unwrap_or(0);
+
+        if !in_script && !in_style {
+            let after = &html[reason_idx + 7..];
+            let after_lower = after.to_lowercase();
+            let end = after_lower.find("</p>")
+                .or_else(|| after_lower.find("<br"))
+                .or_else(|| after_lower.find("</div>"))
+                .or_else(|| after_lower.find("\n"))
+                .unwrap_or(after.len().min(500));
+
+            let text = strip_html_tags(&after[..end]);
+            if !text.is_empty() {
+                return clean_reason_suffix(&text);
+            }
+        }
+    }
+
+    "Unknown reason".to_string()
+}
+
+fn clean_reason_suffix(text: &str) -> String {
+    let trimmed = text.trim();
+    // Remove trailing patterns like " - Username - 9 days ago"
+    // Look for " - " followed by something containing "ago"
+    if let Some(last_dash) = trimmed.rfind(" - ") {
+        let after_last = &trimmed[last_dash + 3..];
+        if after_last.contains("ago") || after_last.contains("day")
+            || after_last.contains("hour") || after_last.contains("minute")
+            || after_last.contains("second") || after_last.contains("month")
+            || after_last.contains("year") || after_last.contains("week")
+        {
+            let before = &trimmed[..last_dash];
+            // There might be another " - Username" before the timestamp
+            if let Some(prev_dash) = before.rfind(" - ") {
+                return before[..prev_dash].trim().to_string();
+            }
+            return before.trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn categorize_deletion_reason(reason: &str) -> &'static str {
+    let lower = reason.to_lowercase();
+
+    if lower.contains("ai assisted") || lower.contains("ai generated")
+        || lower.contains("ai-assisted") || lower.contains("ai-generated")
+        || lower.contains("artificial intelligence")
+        || (lower.contains("irrelevant") && lower.contains("ai"))
+    {
+        "ai_generated"
+    } else if lower.contains("artist request") || lower.contains("character owner")
+        || lower.contains("takedown") || lower.contains("artist's request")
+        || lower.contains("requested removal") || lower.contains("artists request")
+        || lower.contains("owner request")
+    {
+        "artist_requested_deletion"
+    } else if lower.contains("paysite") || lower.contains("commercial content")
+        || lower.contains("paid content") || lower.contains("paywalled")
+    {
+        "paysite_content"
+    } else if lower.contains("inferior") || lower.contains("duplicate")
+        || lower.contains("better version") || lower.contains("replaced")
+    {
+        "inferior_version"
+    } else {
+        "deleted_on_e621"
+    }
+}
+
+#[derive(Serialize)]
+pub struct DuplicateGroup {
+    pub md5: String,
+    pub items: Vec<DuplicateItem>,
+}
+
+#[derive(Serialize)]
+pub struct DuplicateItem {
+    pub item_id: i64,
+    pub source: String,
+    pub source_id: String,
+    pub file_rel: String,
+    pub ext: String,
+}
+
 #[tauri::command]
 pub fn e621_unavailable_list(app: AppHandle, limit: u32) -> Result<Vec<UnavailableDto>, String> {
   with_db(&app, |conn| {
@@ -295,7 +484,7 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
     let client = reqwest::Client::new();
     let resp = client
         .get(&post.file_url)
-        .header("User-Agent", "TailBurrow/0.3.0 (local archiver)")
+        .header("User-Agent", "TailBurrow/0.3.1 (local archiver)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -434,7 +623,7 @@ pub async fn e621_test_connection() -> Result<Status, String> {
   let resp = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.3.0 (test)")
+    .header("User-Agent", "TailBurrow/0.3.1 (test)")
     .query(&[("limit", "1"), ("tags", "order:id_desc")])
     .send()
     .await
@@ -455,7 +644,7 @@ pub async fn e621_fetch_posts(tags: String, limit: u32, page: Option<String>) ->
   let mut req = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.3.0 (feeds)")
+    .header("User-Agent", "TailBurrow/0.3.1 (feeds)")
     .query(&[("tags", tags), ("limit", limit.to_string())]);
 
   if let Some(p) = page {
@@ -545,7 +734,7 @@ pub fn e621_sync_start(
         let resp = client
           .get("https://e621.net/posts.json")
           .basic_auth(&username, Some(&api_key))
-          .header("User-Agent", "TailBurrow/0.3.0 (sync)")
+          .header("User-Agent", "TailBurrow/0.3.1 (sync)")
           .query(&[
             ("tags", tags.as_str()),
             ("limit", "320"),
@@ -743,7 +932,7 @@ pub async fn e621_favorite(post_id: i64) -> Result<Status, String> {
   let resp = client
     .post("https://e621.net/favorites.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.3.0 (favorite)")
+    .header("User-Agent", "TailBurrow/0.3.1 (favorite)")
     .header("Content-Type", "application/x-www-form-urlencoded")
     .body(format!("post_id={}", post_id))
     .send()
@@ -1368,7 +1557,7 @@ pub async fn proxy_remote_media(app: AppHandle, url: String) -> Result<String, S
     let client = reqwest::Client::new();
     let resp = client
         .get(&url)
-        .header("User-Agent", "TailBurrow/0.3.0 (media proxy)")
+        .header("User-Agent", "TailBurrow/0.3.1 (media proxy)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1503,7 +1692,7 @@ pub async fn check_posts_for_pools(app: AppHandle, ids: Vec<i64>) -> Result<Vec<
     let resp = client
         .get("https://e621.net/posts.json")
         .basic_auth(&username, Some(&api_key))
-        .header("User-Agent", "TailBurrow/0.3.0 (pools)")
+        .header("User-Agent", "TailBurrow/0.3.1 (pools)")
         .query(&[("tags", format!("id:{}", ids_param)), ("limit", "320".to_string())])
         .send()
         .await
@@ -1571,7 +1760,7 @@ pub async fn fetch_pool_infos_batch(_app: AppHandle, pool_ids: Vec<i64>) -> Resu
         let resp = client
             .get("https://e621.net/pools.json")
             .basic_auth(&username, Some(&api_key))
-            .header("User-Agent", "TailBurrow/0.3.0 (pools)")
+            .header("User-Agent", "TailBurrow/0.3.1 (pools)")
             .query(&[("search[id]", ids_str.as_str()), ("limit", "20")])
             .send()
             .await
@@ -1615,7 +1804,7 @@ pub async fn fetch_pool_infos_batch(_app: AppHandle, pool_ids: Vec<i64>) -> Resu
             let cover_resp = client
                 .get("https://e621.net/posts.json")
                 .basic_auth(&username, Some(&api_key))
-                .header("User-Agent", "TailBurrow/0.3.0 (pools)")
+                .header("User-Agent", "TailBurrow/0.3.1 (pools)")
                 .query(&[("tags", format!("id:{}", cover_ids)), ("limit", "320".to_string())])
                 .send()
                 .await;
@@ -2102,6 +2291,806 @@ pub fn prune_expired_trash(app: &tauri::AppHandle) -> Result<(), String> {
         "DELETE FROM items WHERE trashed_at < datetime('now', '-30 days') AND trashed_at IS NOT NULL",
         []
     ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// ── Find Duplicates (synchronous) ─────────────────────────────
+
+#[tauri::command]
+pub fn maintenance_find_duplicates(app: AppHandle) -> Result<Vec<DuplicateGroup>, String> {
+    with_db(&app, |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT md5 FROM items \
+             WHERE md5 IS NOT NULL AND md5 != '' AND trashed_at IS NULL \
+             GROUP BY md5 HAVING COUNT(*) > 1"
+        ).map_err(|e| e.to_string())?;
+
+        let md5s: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut groups = Vec::new();
+
+        for md5 in &md5s {
+            let mut item_stmt = conn.prepare(
+                "SELECT item_id, source, source_id, file_rel, COALESCE(ext, '') \
+                 FROM items WHERE md5 = ? AND trashed_at IS NULL \
+                 ORDER BY CASE source \
+                   WHEN 'e621' THEN 0 \
+                   WHEN 'furaffinity' THEN 1 \
+                   ELSE 2 END, \
+                 added_at ASC"
+            ).map_err(|e| e.to_string())?;
+
+            let items: Vec<DuplicateItem> = item_stmt
+                .query_map(params![md5], |row| {
+                    Ok(DuplicateItem {
+                        item_id: row.get(0)?,
+                        source: row.get(1)?,
+                        source_id: row.get(2)?,
+                        file_rel: row.get(3)?,
+                        ext: row.get(4)?,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if items.len() > 1 {
+                groups.push(DuplicateGroup { md5: md5.clone(), items });
+            }
+        }
+
+        Ok(groups)
+    })
+}
+
+// ── Deleted Check ─────────────────────────────────────────────
+
+#[tauri::command]
+pub fn maintenance_deleted_check_status(
+    state: tauri::State<'_, Arc<MaintenanceState>>,
+) -> Result<MaintenanceProgress, String> {
+    Ok(state.deleted_check.lock().map_err(|_| "Lock poisoned")?.clone())
+}
+
+#[tauri::command]
+pub fn maintenance_start_deleted_check(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MaintenanceState>>,
+) -> Result<(), String> {
+    {
+        let mut st = state.deleted_check.lock().map_err(|_| "Lock poisoned")?;
+        if st.running { return Err("Already running".into()); }
+        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into() };
+    }
+    {
+        let mut res = state.deleted_results.lock().map_err(|_| "Lock poisoned")?;
+        res.clear();
+    }
+
+    let state2 = state.inner().clone();
+    let app2 = app.clone();
+
+    std::thread::spawn(move || {
+        let result: Result<(), String> = (|| {
+            let root = get_root(&app2)?;
+            let conn = db::open(&library::db_path(&root))?;
+            let (username, api_key) = load_e621_creds()?;
+            let client = reqwest::blocking::Client::new();
+
+            // ── Phase 1: Collect all deleted favorites from e621 ──
+            let tags = format!("fav:{} status:deleted", username);
+            let mut page = 1u32;
+            let mut deleted_e621_ids: Vec<i64> = Vec::new();
+
+            {
+                let mut st = state2.deleted_check.lock().map_err(|_| "Lock poisoned")?;
+                st.message = "Fetching deleted favorites from e621...".into();
+            }
+
+            loop {
+                let resp = client
+                    .get("https://e621.net/posts.json")
+                    .basic_auth(&username, Some(&api_key))
+                    .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+                    .query(&[
+                        ("tags", tags.as_str()),
+                        ("limit", "320"),
+                        ("page", &page.to_string()),
+                    ])
+                    .send()
+                    .map_err(|e| e.to_string())?;
+
+                if !resp.status().is_success() {
+                    return Err(format!("e621 API error: HTTP {}", resp.status()));
+                }
+
+                let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+                let posts = json.get("posts")
+                    .and_then(|p| p.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                if posts.is_empty() { break; }
+
+                for post in &posts {
+                    if let Some(id) = post.get("id").and_then(|i| i.as_i64()) {
+                        deleted_e621_ids.push(id);
+                    }
+                }
+
+                {
+                    let mut st = state2.deleted_check.lock().map_err(|_| "Lock poisoned")?;
+                    st.message = format!("Scanned {} pages, {} deleted favorites so far...", page, deleted_e621_ids.len());
+                }
+
+                if posts.len() < 320 { break; }
+                page += 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+
+            // ── Phase 2: Cross-reference with local library ──
+            let mut in_library: Vec<(i64, i64)> = Vec::new(); // (post_id, item_id)
+
+            for &post_id in &deleted_e621_ids {
+                let item_id: Option<i64> = conn.query_row(
+                    "SELECT item_id FROM items WHERE source='e621' AND source_id=? AND trashed_at IS NULL",
+                    params![post_id.to_string()],
+                    |r| r.get(0),
+                ).ok();
+
+                if let Some(id) = item_id {
+                    in_library.push((post_id, id));
+                }
+            }
+
+            let total = in_library.len() as u32;
+            {
+                let mut st = state2.deleted_check.lock().map_err(|_| "Lock poisoned")?;
+                st.total = total;
+                st.message = format!(
+                    "Found {} deleted favorites, {} in library. Fetching reasons...",
+                    deleted_e621_ids.len(), total
+                );
+            }
+
+            // ── Phase 3: Fetch deletion reasons via HTML & auto-tag ──
+            let deleted_tag_id = upsert_tag(&conn, "deleted_on_e621", "meta")?;
+            let mut results: Vec<DeletedPostInfo> = Vec::new();
+            let mut checked = 0u32;
+            let mut category_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+            for (post_id, item_id) in &in_library {
+                checked += 1;
+
+                // Fetch HTML page — explicitly request HTML, no auth (avoids JSON redirect)
+                let reason = match client
+                    .get(format!("https://e621.net/posts/{}", post_id))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TailBurrow/0.3.1")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .send()
+                {
+                    Ok(resp) => {
+                        let content_type = resp.headers()
+                            .get("content-type")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_lowercase();
+
+                        if resp.status().is_success() {
+                            match resp.text() {
+                                Ok(body) => {
+                                    if content_type.contains("json") {
+                                        // Got JSON instead of HTML — try to parse
+                                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                            json.get("post")
+                                                .and_then(|p| p.get("flags"))
+                                                .and_then(|f| f.get("reason"))
+                                                .and_then(|r| r.as_str())
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_else(|| "Unknown reason (JSON response)".to_string())
+                                        } else {
+                                            "Unknown reason (parse error)".to_string()
+                                        }
+                                    } else {
+                                        extract_deletion_reason(&body)
+                                    }
+                                }
+                                Err(_) => "Unknown reason (read error)".to_string(),
+                            }
+                        } else {
+                            format!("Unknown reason (HTTP {})", resp.status())
+                        }
+                    }
+                    Err(e) => format!("Unknown reason ({})", e),
+                };
+
+                let category = categorize_deletion_reason(&reason);
+
+                // Always apply deleted_on_e621
+                conn.execute(
+                    "INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)",
+                    params![item_id, deleted_tag_id],
+                ).ok();
+
+                // Apply category-specific tag if different
+                if category != "deleted_on_e621" {
+                    let cat_tag_id = upsert_tag(&conn, category, "meta")?;
+                    conn.execute(
+                        "INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?,?)",
+                        params![item_id, cat_tag_id],
+                    ).ok();
+                }
+
+                *category_counts.entry(category.to_string()).or_insert(0) += 1;
+
+                results.push(DeletedPostInfo {
+                    post_id: *post_id,
+                    item_id: *item_id,
+                    reason: reason.clone(),
+                    tag_applied: category.to_string(),
+                });
+
+                {
+                    let mut st = state2.deleted_check.lock().map_err(|_| "Lock poisoned")?;
+                    st.current = checked;
+                    st.message = format!("Fetching reasons: {}/{} — {}", checked, total, reason.chars().take(60).collect::<String>());
+                }
+
+                // Rate limit — be gentle with HTML pages
+                std::thread::sleep(std::time::Duration::from_millis(700));
+            }
+
+            // Store results
+            {
+                let mut res = state2.deleted_results.lock().map_err(|_| "Lock poisoned")?;
+                *res = results;
+            }
+
+            // Build summary
+            let ai = category_counts.get("ai_generated").copied().unwrap_or(0);
+            let artist = category_counts.get("artist_requested_deletion").copied().unwrap_or(0);
+            let paysite = category_counts.get("paysite_content").copied().unwrap_or(0);
+            let inferior = category_counts.get("inferior_version").copied().unwrap_or(0);
+            let other = category_counts.get("deleted_on_e621").copied().unwrap_or(0);
+
+            {
+                let mut st = state2.deleted_check.lock().map_err(|_| "Lock poisoned")?;
+                st.running = false;
+                st.current = total;
+                st.total = deleted_e621_ids.len() as u32;
+
+                let mut parts = vec![
+                    format!("{} deleted on e621, {} in library", deleted_e621_ids.len(), in_library.len()),
+                ];
+                if ai > 0 { parts.push(format!("AI: {}", ai)); }
+                if artist > 0 { parts.push(format!("Artist request: {}", artist)); }
+                if paysite > 0 { parts.push(format!("Paysite: {}", paysite)); }
+                if inferior > 0 { parts.push(format!("Inferior/duplicate: {}", inferior)); }
+                if other > 0 { parts.push(format!("Other: {}", other)); }
+
+                st.message = parts.join(" • ");
+            }
+
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            if let Ok(mut st) = state2.deleted_check.lock() {
+                st.running = false;
+                st.message = format!("Error: {}", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn maintenance_get_deleted_results(
+    state: tauri::State<'_, Arc<MaintenanceState>>,
+) -> Result<Vec<DeletedPostInfo>, String> {
+    let res = state.deleted_results.lock().map_err(|_| "Lock poisoned")?;
+    Ok(res.clone())
+}
+
+#[tauri::command]
+pub async fn e621_unfavorite(post_id: i64) -> Result<Status, String> {
+    let (username, api_key) = load_e621_creds()?;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .delete(format!("https://e621.net/favorites/{}.json", post_id))
+        .basic_auth(username, Some(api_key))
+        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 204 = success, 404 = already not favorited
+    if !resp.status().is_success() && resp.status().as_u16() != 404 {
+        return Err(format!("Unfavorite failed: HTTP {}", resp.status()));
+    }
+
+    Ok(Status { ok: true, message: "Unfavorited".into() })
+}
+
+// ── Metadata Update ───────────────────────────────────────────
+
+#[tauri::command]
+pub fn maintenance_metadata_update_status(
+    state: tauri::State<'_, Arc<MaintenanceState>>,
+) -> Result<MaintenanceProgress, String> {
+    Ok(state.metadata_update.lock().map_err(|_| "Lock poisoned")?.clone())
+}
+
+#[tauri::command]
+pub fn maintenance_start_metadata_update(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MaintenanceState>>,
+) -> Result<(), String> {
+    {
+        let mut st = state.metadata_update.lock().map_err(|_| "Lock poisoned")?;
+        if st.running { return Err("Already running".into()); }
+        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into() };
+    }
+
+    let state2 = state.inner().clone();
+    let app2 = app.clone();
+
+    std::thread::spawn(move || {
+        let result: Result<(), String> = (|| {
+            let root = get_root(&app2)?;
+            let mut conn = db::open(&library::db_path(&root))?;
+            conn.busy_timeout(std::time::Duration::from_secs(30)).map_err(|e| e.to_string())?;
+
+            // Collect (item_id, source_id) pairs — scope the statement borrow
+            let all_items: Vec<(i64, i64)> = {
+                let mut stmt = conn.prepare(
+                    "SELECT item_id, source_id FROM items WHERE source = 'e621' AND trashed_at IS NULL"
+                ).map_err(|e| e.to_string())?;
+
+                let result = stmt.query_map([], |row| {
+                        let item_id: i64 = row.get(0)?;
+                        let sid: String = row.get(1)?;
+                        Ok((item_id, sid.parse::<i64>().unwrap_or(0)))
+                    })
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .filter(|(_, sid)| *sid > 0)
+                    .collect();
+                result
+            };
+
+            let total = all_items.len() as u32;
+            {
+                let mut st = state2.metadata_update.lock().map_err(|_| "Lock poisoned")?;
+                st.total = total;
+                st.message = format!("Updating {} posts...", total);
+            }
+
+            if total == 0 {
+                let mut st = state2.metadata_update.lock().map_err(|_| "Lock poisoned")?;
+                st.running = false;
+                st.message = "No e621 posts to update.".into();
+                return Ok(());
+            }
+
+            let (username, api_key) = load_e621_creds()?;
+            let client = reqwest::blocking::Client::new();
+            let mut updated = 0u32;
+            let mut checked = 0u32;
+            let mut errors = 0u32;
+
+            // Build a lookup: e621_source_id → item_id
+            let id_map: std::collections::HashMap<i64, i64> = all_items.iter()
+                .map(|(item_id, sid)| (*sid, *item_id))
+                .collect();
+
+            let source_ids: Vec<i64> = all_items.iter().map(|(_, sid)| *sid).collect();
+
+            for chunk in source_ids.chunks(100) {
+                let ids_str = chunk.iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+
+                let resp = client
+                    .get("https://e621.net/posts.json")
+                    .basic_auth(&username, Some(&api_key))
+                    .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+                    .query(&[
+                        ("tags", format!("id:{}", ids_str)),
+                        ("limit", "320".to_string()),
+                    ])
+                    .send();
+
+                match resp {
+                    Ok(r) if r.status().is_success() => {
+                        if let Ok(json) = r.json::<serde_json::Value>() {
+                            let posts = json.get("posts")
+                                .and_then(|p| p.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+
+                            let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+                            for post in &posts {
+                                let post_id = post.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+                                let item_id = match id_map.get(&post_id) {
+                                    Some(id) => *id,
+                                    None => continue,
+                                };
+
+                                let score_total = post.get("score")
+                                    .and_then(|s| s.get("total"))
+                                    .and_then(|t| t.as_i64());
+                                let fav_count = post.get("fav_count").and_then(|f| f.as_i64());
+                                let rating = post.get("rating")
+                                    .and_then(|r| r.as_str())
+                                    .map(|s| s.to_string());
+
+                                // Update item fields
+                                tx.execute(
+                                    "UPDATE items SET score_total=?, fav_count=?, rating=? WHERE item_id=?",
+                                    params![score_total, fav_count, rating, item_id],
+                                ).ok();
+
+                                // Parse tags
+                                let tags_obj = post.get("tags").cloned()
+                                    .unwrap_or(serde_json::Value::Null);
+
+                                let vec_from = |k: &str| -> Vec<String> {
+                                    tags_obj.get(k)
+                                        .and_then(|v| v.as_array())
+                                        .map(|a| a.iter()
+                                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                            .collect())
+                                        .unwrap_or_default()
+                                };
+
+                                let tags = E621Tags {
+                                    general: vec_from("general"),
+                                    species: vec_from("species"),
+                                    character: vec_from("character"),
+                                    artist: vec_from("artist"),
+                                    meta: vec_from("meta"),
+                                    lore: vec_from("lore"),
+                                    copyright: vec_from("copyright"),
+                                };
+
+                                // Replace tags
+                                tx.execute("DELETE FROM item_tags WHERE item_id=?", [item_id]).ok();
+                                if let Err(e) = insert_tags_for_item(&tx, item_id, &tags) {
+                                    eprintln!("[maintenance] tag insert error for {}: {}", post_id, e);
+                                    errors += 1;
+                                    continue;
+                                }
+
+                                // Update primary artist
+                                let primary_artist = sanitize_slug(&pick_primary_artist(&tags.artist));
+                                tx.execute(
+                                    "UPDATE items SET primary_artist=? WHERE item_id=?",
+                                    params![primary_artist, item_id],
+                                ).ok();
+
+                                // Update sources
+                                let sources: Vec<String> = post.get("sources")
+                                    .and_then(|s| s.as_array())
+                                    .map(|arr| arr.iter()
+                                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                        .collect())
+                                    .unwrap_or_default();
+
+                                tx.execute("DELETE FROM item_sources WHERE item_id=?", [item_id]).ok();
+                                for url in &sources {
+                                    if let Ok(sid) = upsert_source(&tx, url) {
+                                        tx.execute(
+                                            "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?,?)",
+                                            params![item_id, sid],
+                                        ).ok();
+                                    }
+                                }
+
+                                updated += 1;
+                            }
+
+                            tx.commit().map_err(|e| e.to_string())?;
+                        }
+                    }
+                    _ => {
+                        errors += chunk.len() as u32;
+                    }
+                }
+
+                checked += chunk.len() as u32;
+                {
+                    let mut st = state2.metadata_update.lock().map_err(|_| "Lock poisoned")?;
+                    st.current = checked;
+                    st.message = format!("Updated {}/{}...", updated, total);
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+
+            {
+                let mut st = state2.metadata_update.lock().map_err(|_| "Lock poisoned")?;
+                st.running = false;
+                st.current = total;
+                st.message = format!(
+                    "Done. Updated {} of {} posts.{}",
+                    updated, total,
+                    if errors > 0 { format!(" {} errors.", errors) } else { String::new() }
+                );
+            }
+
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            if let Ok(mut st) = state2.metadata_update.lock() {
+                st.running = false;
+                st.message = format!("Error: {}", e);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+// ── FA → e621 Upgrade ─────────────────────────────────────────
+
+#[tauri::command]
+pub fn maintenance_fa_upgrade_status(
+    state: tauri::State<'_, Arc<MaintenanceState>>,
+) -> Result<MaintenanceProgress, String> {
+    Ok(state.fa_upgrade.lock().map_err(|_| "Lock poisoned")?.clone())
+}
+
+#[tauri::command]
+pub fn maintenance_start_fa_upgrade(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<MaintenanceState>>,
+) -> Result<(), String> {
+    {
+        let mut st = state.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
+        if st.running { return Err("Already running".into()); }
+        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into() };
+    }
+
+    let state2 = state.inner().clone();
+    let app2 = app.clone();
+
+    std::thread::spawn(move || {
+        let result: Result<(), String> = (|| {
+            let root = get_root(&app2)?;
+            let conn = db::open(&library::db_path(&root))?;
+
+            // 1. Collect all FA items with MD5
+            let mut stmt = conn.prepare(
+                "SELECT item_id, source_id, md5 FROM items \
+                 WHERE source = 'furaffinity' AND md5 IS NOT NULL AND md5 != '' \
+                 AND trashed_at IS NULL"
+            ).map_err(|e| e.to_string())?;
+
+            let fa_items: Vec<(i64, String, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let total = fa_items.len() as u32;
+            {
+                let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
+                st.total = total;
+                st.message = format!("Checking {} FA posts...", total);
+            }
+
+            if total == 0 {
+                let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
+                st.running = false;
+                st.message = "No FurAffinity posts to upgrade.".into();
+                return Ok(());
+            }
+
+            // 2. Collect known e621 MD5s for local fast-path
+            let mut e621_stmt = conn.prepare(
+                "SELECT md5 FROM items WHERE source = 'e621' AND md5 IS NOT NULL AND md5 != '' AND trashed_at IS NULL"
+            ).map_err(|e| e.to_string())?;
+
+            let known_e621_md5s: std::collections::HashSet<String> = e621_stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let (username, api_key) = load_e621_creds()?;
+            let client = reqwest::blocking::Client::new();
+            let now = chrono::Local::now().to_rfc3339();
+            let mut upgraded = 0u32;
+            let mut skipped = 0u32;
+            let mut errors = 0u32;
+            let mut checked = 0u32;
+
+            for (item_id, _fa_source_id, md5) in &fa_items {
+                checked += 1;
+
+                // Fast path: already have this MD5 as e621 item locally
+                if known_e621_md5s.contains(md5) {
+                    conn.execute(
+                        "UPDATE items SET trashed_at = ? WHERE item_id = ?",
+                        params![now, item_id],
+                    ).ok();
+                    upgraded += 1;
+
+                    let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
+                    st.current = checked;
+                    st.message = format!(
+                        "Checked {}/{}... {} upgraded, {} skipped",
+                        checked, total, upgraded, skipped
+                    );
+                    continue;
+                }
+
+                // Slow path: query e621 API by MD5
+                let resp = client
+                    .get("https://e621.net/posts.json")
+                    .basic_auth(&username, Some(&api_key))
+                    .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+                    .query(&[
+                        ("tags", format!("md5:{}", md5)),
+                        ("limit", "1".to_string()),
+                    ])
+                    .send();
+
+                match resp {
+                    Ok(r) if r.status().is_success() => {
+                        if let Ok(json) = r.json::<serde_json::Value>() {
+                            let posts = json.get("posts")
+                                .and_then(|p| p.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+
+                            if let Some(e621_post) = posts.first() {
+                                let e6_id = e621_post.get("id")
+                                    .and_then(|i| i.as_i64())
+                                    .unwrap_or(0);
+                                let file_url = e621_post.get("file")
+                                    .and_then(|f| f.get("url"))
+                                    .and_then(|u| u.as_str())
+                                    .map(|s| s.to_string());
+                                let file_ext = e621_post.get("file")
+                                    .and_then(|f| f.get("ext"))
+                                    .and_then(|e| e.as_str())
+                                    .unwrap_or("jpg")
+                                    .to_string();
+                                let file_md5 = e621_post.get("file")
+                                    .and_then(|f| f.get("md5"))
+                                    .and_then(|m| m.as_str())
+                                    .map(|s| s.to_string());
+
+                                if e6_id > 0 {
+                                    if let Some(ref url) = file_url {
+                                        // Trash FA item first (so MD5 dedup doesn't block)
+                                        conn.execute(
+                                            "UPDATE items SET trashed_at = ? WHERE item_id = ?",
+                                            params![now, item_id],
+                                        ).ok();
+
+                                        let tags_obj = e621_post.get("tags").cloned()
+                                            .unwrap_or(serde_json::Value::Null);
+                                        let vec_from = |k: &str| -> Vec<String> {
+                                            tags_obj.get(k)
+                                                .and_then(|v| v.as_array())
+                                                .map(|a| a.iter()
+                                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                                    .collect())
+                                                .unwrap_or_default()
+                                        };
+
+                                        let sources: Vec<String> = e621_post.get("sources")
+                                            .and_then(|s| s.as_array())
+                                            .map(|arr| arr.iter()
+                                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                                .collect())
+                                            .unwrap_or_default();
+
+                                        let post_input = E621PostInput {
+                                            id: e6_id,
+                                            file_url: url.clone(),
+                                            file_ext,
+                                            file_md5,
+                                            rating: e621_post.get("rating")
+                                                .and_then(|r| r.as_str())
+                                                .map(|s| s.to_string()),
+                                            fav_count: e621_post.get("fav_count")
+                                                .and_then(|f| f.as_i64()),
+                                            score_total: e621_post.get("score")
+                                                .and_then(|s| s.get("total"))
+                                                .and_then(|t| t.as_i64()),
+                                            created_at: e621_post.get("created_at")
+                                                .and_then(|c| c.as_str())
+                                                .map(|s| s.to_string()),
+                                            sources,
+                                            tags: E621Tags {
+                                                general: vec_from("general"),
+                                                species: vec_from("species"),
+                                                character: vec_from("character"),
+                                                artist: vec_from("artist"),
+                                                meta: vec_from("meta"),
+                                                lore: vec_from("lore"),
+                                                copyright: vec_from("copyright"),
+                                            },
+                                        };
+
+                                        match tauri::async_runtime::block_on(
+                                            add_e621_post(app2.clone(), post_input)
+                                        ) {
+                                            Ok(_) => { upgraded += 1; }
+                                            Err(e) => {
+                                                // Download failed — restore FA item
+                                                conn.execute(
+                                                    "UPDATE items SET trashed_at = NULL WHERE item_id = ?",
+                                                    params![item_id],
+                                                ).ok();
+                                                eprintln!("[maintenance] FA upgrade failed for {}: {}", e6_id, e);
+                                                errors += 1;
+                                            }
+                                        }
+                                    } else {
+                                        // e621 post exists but file URL is null (deleted file)
+                                        skipped += 1;
+                                    }
+                                } else {
+                                    skipped += 1;
+                                }
+                            } else {
+                                // Not found on e621
+                                skipped += 1;
+                            }
+                        }
+                    }
+                    _ => {
+                        errors += 1;
+                    }
+                }
+
+                {
+                    let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
+                    st.current = checked;
+                    st.message = format!(
+                        "Checked {}/{}... {} upgraded, {} skipped",
+                        checked, total, upgraded, skipped
+                    );
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+
+            {
+                let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
+                st.running = false;
+                st.current = total;
+                st.message = format!(
+                    "Done. {} upgraded to e621, {} not found, {} errors.",
+                    upgraded, skipped, errors
+                );
+            }
+
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            if let Ok(mut st) = state2.fa_upgrade.lock() {
+                st.running = false;
+                st.message = format!("Error: {}", e);
+            }
+        }
+    });
 
     Ok(())
 }
