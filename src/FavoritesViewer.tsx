@@ -4099,12 +4099,12 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       )}
                     </div>
 
-                    {/* FA → e621 Upgrade */}
+                    {/* Enrich from e621 */}
                     <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-4">
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0">
-                          <h4 className="font-medium text-sm flex items-center gap-2"><Star className="w-4 h-4 text-purple-400" />Upgrade FA → e621</h4>
-                          <p className="text-xs text-[#4c4b5a] mt-1">Check if FurAffinity posts exist on e621 (by MD5) and upgrade them to higher quality e621 versions.</p>
+                          <h4 className="font-medium text-sm flex items-center gap-2"><Star className="w-4 h-4 text-purple-400" />Enrich from e621</h4>
+                          <p className="text-xs text-[#4c4b5a] mt-1">Check FurAffinity and local imports against e621 by MD5 and visual similarity (IQDB). Imports tags, scores, and sources. Upgrades to the higher-resolution version when available.</p>
                         </div>
                         <button
                           onClick={startFaUpgrade}

@@ -2870,34 +2870,40 @@ pub fn maintenance_start_fa_upgrade(
             let root = get_root(&app2)?;
             let conn = db::open(&library::db_path(&root))?;
 
-            // 1. Collect all FA items with MD5
+            // 1. Collect all non-e621 items with MD5 (FA + local)
             let mut stmt = conn.prepare(
-                "SELECT item_id, source_id, md5 FROM items \
-                 WHERE source = 'furaffinity' AND md5 IS NOT NULL AND md5 != '' \
+                "SELECT item_id, source, source_id, md5, file_rel FROM items \
+                 WHERE source != 'e621' AND md5 IS NOT NULL AND md5 != '' \
                  AND trashed_at IS NULL"
             ).map_err(|e| e.to_string())?;
 
-            let fa_items: Vec<(i64, String, String)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            let candidates: Vec<(i64, String, String, String, String)> = stmt
+                .query_map([], |row| Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                )))
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
 
-            let total = fa_items.len() as u32;
+            let total = candidates.len() as u32;
             {
                 let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
                 st.total = total;
-                st.message = format!("Checking {} FA posts...", total);
+                st.message = format!("Checking {} non-e621 posts...", total);
             }
 
             if total == 0 {
                 let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
                 st.running = false;
-                st.message = "No FurAffinity posts to upgrade.".into();
+                st.message = "No non-e621 posts to check.".into();
                 return Ok(());
             }
 
-            // 2. Collect known e621 MD5s for local fast-path
+            // 2. Collect known e621 MD5s for local fast-path dedup
             let mut e621_stmt = conn.prepare(
                 "SELECT md5 FROM items WHERE source = 'e621' AND md5 IS NOT NULL AND md5 != '' AND trashed_at IS NULL"
             ).map_err(|e| e.to_string())?;
@@ -2909,165 +2915,248 @@ pub fn maintenance_start_fa_upgrade(
                 .collect();
 
             let (username, api_key) = load_e621_creds()?;
-            let client = reqwest::blocking::Client::new();
-            let now = chrono::Local::now().to_rfc3339();
-            let mut upgraded = 0u32;
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .map_err(|e| e.to_string())?;
+
+            let mut enriched = 0u32;
+            let mut upgraded_file = 0u32;
+            let mut metadata_only = 0u32;
             let mut skipped = 0u32;
             let mut errors = 0u32;
             let mut checked = 0u32;
 
-            for (item_id, _fa_source_id, md5) in &fa_items {
+            for (item_id, _item_source, _source_id, md5, file_rel) in &candidates {
                 checked += 1;
 
-                // Fast path: already have this MD5 as e621 item locally
+                // Fast path: already have this MD5 as e621 item locally — skip
                 if known_e621_md5s.contains(md5) {
+                    skipped += 1;
+                    update_enrich_progress(&state2, checked, total, enriched, skipped);
+                    continue;
+                }
+
+                // ── Strategy 1: MD5 lookup (fast, exact match) ──
+                let e621_post = match find_e621_by_md5(&client, &username, &api_key, md5) {
+                    Ok(Some(post)) => Some(post),
+                    Ok(None) => {
+                        // ── Strategy 2: IQDB visual search (slower, catches edits/recompression) ──
+                        let local_path = root.join(file_rel);
+                        match find_e621_by_iqdb(&client, &username, &api_key, &local_path) {
+                            Ok(Some(post)) => Some(post),
+                            Ok(None) => None,
+                            Err(e) => {
+                                eprintln!("[enrich] IQDB error for item {}: {}", item_id, e);
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[enrich] MD5 lookup error for item {}: {}", item_id, e);
+                        errors += 1;
+                        update_enrich_progress(&state2, checked, total, enriched, skipped);
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        continue;
+                    }
+                };
+
+                let e621_post = match e621_post {
+                    Some(p) => p,
+                    None => {
+                        skipped += 1;
+                        update_enrich_progress(&state2, checked, total, enriched, skipped);
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        continue;
+                    }
+                };
+
+                let e6_id = e621_post.get("id")
+                    .and_then(|i| i.as_i64())
+                    .unwrap_or(0);
+
+                if e6_id == 0 {
+                    skipped += 1;
+                    update_enrich_progress(&state2, checked, total, enriched, skipped);
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                }
+
+                // ── Extract e621 metadata ──
+                let tags_obj = e621_post.get("tags").cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let vec_from = |k: &str| -> Vec<String> {
+                    tags_obj.get(k)
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect())
+                        .unwrap_or_default()
+                };
+
+                let e6_tags = E621Tags {
+                    general: vec_from("general"),
+                    species: vec_from("species"),
+                    character: vec_from("character"),
+                    artist: vec_from("artist"),
+                    meta: vec_from("meta"),
+                    lore: vec_from("lore"),
+                    copyright: vec_from("copyright"),
+                };
+
+                let e6_rating = e621_post.get("rating")
+                    .and_then(|r| r.as_str())
+                    .map(|s| s.to_string());
+                let e6_fav_count = e621_post.get("fav_count").and_then(|f| f.as_i64());
+                let e6_score = e621_post.get("score")
+                    .and_then(|s| s.get("total"))
+                    .and_then(|t| t.as_i64());
+                let e6_created = e621_post.get("created_at")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+
+                let e6_sources: Vec<String> = e621_post.get("sources")
+                    .and_then(|s| s.as_array())
+                    .map(|arr| arr.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect())
+                    .unwrap_or_default();
+
+                let primary_artist = sanitize_slug(&pick_primary_artist(&e6_tags.artist));
+
+                // ── Check if e621 has a file (not deleted) ──
+                let file_url = e621_post.get("file")
+                    .and_then(|f| f.get("url"))
+                    .and_then(|u| u.as_str())
+                    .filter(|u| !u.is_empty())
+                    .map(|s| s.to_string());
+                let e6_width = e621_post.get("file")
+                    .and_then(|f| f.get("width"))
+                    .and_then(|w| w.as_i64())
+                    .unwrap_or(0);
+                let e6_height = e621_post.get("file")
+                    .and_then(|f| f.get("height"))
+                    .and_then(|h| h.as_i64())
+                    .unwrap_or(0);
+                let e6_ext = e621_post.get("file")
+                    .and_then(|f| f.get("ext"))
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("jpg")
+                    .to_string();
+                let e6_file_md5 = e621_post.get("file")
+                    .and_then(|f| f.get("md5"))
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string());
+                let e6_resolution = e6_width * e6_height;
+
+                // ── Get local file resolution ──
+                let local_path = root.join(file_rel);
+                let local_resolution = get_image_resolution(&local_path);
+
+                let should_replace_file = file_url.is_some()
+                    && e6_resolution > 0
+                    && e6_resolution > local_resolution;
+
+                if should_replace_file {
+                    // ── Download higher-res e621 file & replace ──
+                    let file_url_str = file_url.as_ref().unwrap();
+                    let now = chrono::Local::now().to_rfc3339();
+
+                    // Trash current item first so MD5 dedup doesn't block
                     conn.execute(
                         "UPDATE items SET trashed_at = ? WHERE item_id = ?",
                         params![now, item_id],
                     ).ok();
-                    upgraded += 1;
 
-                    let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
-                    st.current = checked;
-                    st.message = format!(
-                        "Checked {}/{}... {} upgraded, {} skipped",
-                        checked, total, upgraded, skipped
-                    );
-                    continue;
-                }
+                    let post_input = E621PostInput {
+                        id: e6_id,
+                        file_url: file_url_str.clone(),
+                        file_ext: e6_ext,
+                        file_md5: e6_file_md5,
+                        rating: e6_rating,
+                        fav_count: e6_fav_count,
+                        score_total: e6_score,
+                        created_at: e6_created,
+                        sources: e6_sources,
+                        tags: e6_tags,
+                    };
 
-                // Slow path: query e621 API by MD5
-                let resp = client
-                    .get("https://e621.net/posts.json")
-                    .basic_auth(&username, Some(&api_key))
-                    .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
-                    .query(&[
-                        ("tags", format!("md5:{}", md5)),
-                        ("limit", "1".to_string()),
-                    ])
-                    .send();
-
-                match resp {
-                    Ok(r) if r.status().is_success() => {
-                        if let Ok(json) = r.json::<serde_json::Value>() {
-                            let posts = json.get("posts")
-                                .and_then(|p| p.as_array())
-                                .cloned()
-                                .unwrap_or_default();
-
-                            if let Some(e621_post) = posts.first() {
-                                let e6_id = e621_post.get("id")
-                                    .and_then(|i| i.as_i64())
-                                    .unwrap_or(0);
-                                let file_url = e621_post.get("file")
-                                    .and_then(|f| f.get("url"))
-                                    .and_then(|u| u.as_str())
-                                    .map(|s| s.to_string());
-                                let file_ext = e621_post.get("file")
-                                    .and_then(|f| f.get("ext"))
-                                    .and_then(|e| e.as_str())
-                                    .unwrap_or("jpg")
-                                    .to_string();
-                                let file_md5 = e621_post.get("file")
-                                    .and_then(|f| f.get("md5"))
-                                    .and_then(|m| m.as_str())
-                                    .map(|s| s.to_string());
-
-                                if e6_id > 0 {
-                                    if let Some(ref url) = file_url {
-                                        // Trash FA item first (so MD5 dedup doesn't block)
-                                        conn.execute(
-                                            "UPDATE items SET trashed_at = ? WHERE item_id = ?",
-                                            params![now, item_id],
-                                        ).ok();
-
-                                        let tags_obj = e621_post.get("tags").cloned()
-                                            .unwrap_or(serde_json::Value::Null);
-                                        let vec_from = |k: &str| -> Vec<String> {
-                                            tags_obj.get(k)
-                                                .and_then(|v| v.as_array())
-                                                .map(|a| a.iter()
-                                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                                    .collect())
-                                                .unwrap_or_default()
-                                        };
-
-                                        let sources: Vec<String> = e621_post.get("sources")
-                                            .and_then(|s| s.as_array())
-                                            .map(|arr| arr.iter()
-                                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                                .collect())
-                                            .unwrap_or_default();
-
-                                        let post_input = E621PostInput {
-                                            id: e6_id,
-                                            file_url: url.clone(),
-                                            file_ext,
-                                            file_md5,
-                                            rating: e621_post.get("rating")
-                                                .and_then(|r| r.as_str())
-                                                .map(|s| s.to_string()),
-                                            fav_count: e621_post.get("fav_count")
-                                                .and_then(|f| f.as_i64()),
-                                            score_total: e621_post.get("score")
-                                                .and_then(|s| s.get("total"))
-                                                .and_then(|t| t.as_i64()),
-                                            created_at: e621_post.get("created_at")
-                                                .and_then(|c| c.as_str())
-                                                .map(|s| s.to_string()),
-                                            sources,
-                                            tags: E621Tags {
-                                                general: vec_from("general"),
-                                                species: vec_from("species"),
-                                                character: vec_from("character"),
-                                                artist: vec_from("artist"),
-                                                meta: vec_from("meta"),
-                                                lore: vec_from("lore"),
-                                                copyright: vec_from("copyright"),
-                                            },
-                                        };
-
-                                        match tauri::async_runtime::block_on(
-                                            add_e621_post(app2.clone(), post_input)
-                                        ) {
-                                            Ok(_) => { upgraded += 1; }
-                                            Err(e) => {
-                                                // Download failed — restore FA item
-                                                conn.execute(
-                                                    "UPDATE items SET trashed_at = NULL WHERE item_id = ?",
-                                                    params![item_id],
-                                                ).ok();
-                                                eprintln!("[maintenance] FA upgrade failed for {}: {}", e6_id, e);
-                                                errors += 1;
-                                            }
-                                        }
-                                    } else {
-                                        // e621 post exists but file URL is null (deleted file)
-                                        skipped += 1;
-                                    }
-                                } else {
-                                    skipped += 1;
-                                }
-                            } else {
-                                // Not found on e621
-                                skipped += 1;
-                            }
+                    match tauri::async_runtime::block_on(
+                        add_e621_post(app2.clone(), post_input)
+                    ) {
+                        Ok(_) => {
+                            upgraded_file += 1;
+                            enriched += 1;
+                        }
+                        Err(e) => {
+                            // Download failed — restore original item
+                            conn.execute(
+                                "UPDATE items SET trashed_at = NULL WHERE item_id = ?",
+                                params![item_id],
+                            ).ok();
+                            eprintln!("[enrich] file upgrade failed for e621#{}: {}", e6_id, e);
+                            errors += 1;
                         }
                     }
-                    _ => {
-                        errors += 1;
+                } else {
+                    // ── Metadata-only enrichment (keep local file) ──
+                    let enrich_result: Result<(), String> = (|| {
+                        // Update item metadata fields
+                        conn.execute(
+                            "UPDATE items SET rating = COALESCE(?, rating), \
+                             fav_count = COALESCE(?, fav_count), \
+                             score_total = COALESCE(?, score_total), \
+                             primary_artist = ? \
+                             WHERE item_id = ?",
+                            params![
+                                e6_rating,
+                                e6_fav_count,
+                                e6_score,
+                                primary_artist,
+                                item_id
+                            ],
+                        ).map_err(|e| e.to_string())?;
+
+                        // Replace tags with e621's categorized tags
+                        conn.execute(
+                            "DELETE FROM item_tags WHERE item_id = ?",
+                            [item_id],
+                        ).map_err(|e| e.to_string())?;
+                        insert_tags_for_item(&conn, *item_id, &e6_tags)?;
+
+                        // Add e621 post link as source
+                        let e6_post_url = format!("https://e621.net/posts/{}", e6_id);
+                        let sid = upsert_source(&conn, &e6_post_url)?;
+                        conn.execute(
+                            "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?,?)",
+                            params![item_id, sid],
+                        ).map_err(|e| e.to_string())?;
+
+                        // Add e621's source links
+                        for url in &e6_sources {
+                            let sid = upsert_source(&conn, url)?;
+                            conn.execute(
+                                "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?,?)",
+                                params![item_id, sid],
+                            ).map_err(|e| e.to_string())?;
+                        }
+
+                        Ok(())
+                    })();
+
+                    match enrich_result {
+                        Ok(_) => {
+                            metadata_only += 1;
+                            enriched += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("[enrich] metadata update failed for item {}: {}", item_id, e);
+                            errors += 1;
+                        }
                     }
                 }
 
-                {
-                    let mut st = state2.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
-                    st.current = checked;
-                    st.message = format!(
-                        "Checked {}/{}... {} upgraded, {} skipped",
-                        checked, total, upgraded, skipped
-                    );
-                }
-
+                update_enrich_progress(&state2, checked, total, enriched, skipped);
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
 
@@ -3076,8 +3165,8 @@ pub fn maintenance_start_fa_upgrade(
                 st.running = false;
                 st.current = total;
                 st.message = format!(
-                    "Done. {} upgraded to e621, {} not found, {} errors.",
-                    upgraded, skipped, errors
+                    "Done. {} enriched ({} file upgrades, {} metadata-only), {} not on e621, {} errors.",
+                    enriched, upgraded_file, metadata_only, skipped, errors
                 );
             }
 
@@ -3093,4 +3182,206 @@ pub fn maintenance_start_fa_upgrade(
     });
 
     Ok(())
+}
+
+/// Look up an e621 post by MD5 hash. Returns the post JSON if found.
+fn find_e621_by_md5(
+    client: &reqwest::blocking::Client,
+    username: &str,
+    api_key: &str,
+    md5: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let resp = client
+        .get("https://e621.net/posts.json")
+        .basic_auth(username, Some(api_key))
+        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .query(&[
+            ("tags", format!("md5:{}", md5)),
+            ("limit", "1".to_string()),
+        ])
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("e621 MD5 lookup HTTP {}", resp.status()));
+    }
+
+    let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    let posts = json.get("posts")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(posts.into_iter().next())
+}
+
+/// Look up an e621 post by visual similarity using IQDB.
+/// Uploads the local file and returns the best match if similarity is high enough.
+fn find_e621_by_iqdb(
+    client: &reqwest::blocking::Client,
+    username: &str,
+    api_key: &str,
+    file_path: &std::path::Path,
+) -> Result<Option<serde_json::Value>, String> {
+    if !file_path.exists() {
+        return Ok(None);
+    }
+
+    let ext = file_path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // IQDB only works with images, not video
+    if ["mp4", "webm", "gif"].contains(&ext.as_str()) {
+        return Ok(None);
+    }
+
+    // Read the file
+    let file_bytes = fs::read(file_path).map_err(|e| e.to_string())?;
+
+    // Determine MIME type
+    let mime_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    };
+
+    let file_name = file_path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image.jpg")
+        .to_string();
+
+    // Build multipart form
+    let part = reqwest::blocking::multipart::Part::bytes(file_bytes)
+        .file_name(file_name)
+        .mime_str(mime_type)
+        .map_err(|e| e.to_string())?;
+
+    let form = reqwest::blocking::multipart::Form::new()
+        .part("file", part);
+
+    // Rate limit before IQDB request
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let resp = client
+        .post("https://e621.net/iqdb_queries.json")
+        .basic_auth(username, Some(api_key))
+        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .multipart(form)
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        // IQDB can return 422 for unsupported formats or too-small images
+        if resp.status().as_u16() == 422 {
+            return Ok(None);
+        }
+        return Err(format!("IQDB HTTP {}", resp.status()));
+    }
+
+    let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+
+    // The IQDB response is an array of matches.
+    // Each match has: { "post": { ... }, "score": float }
+    // Higher score = more similar. We want score >= ~90% for a confident match.
+    let matches = json.as_array().cloned().unwrap_or_default();
+
+    for m in &matches {
+        let score = m.get("score")
+            .and_then(|s| s.as_f64())
+            .unwrap_or(0.0);
+
+        // Only accept high-confidence matches (90%+)
+        if score < 90.0 {
+            continue;
+        }
+
+        if let Some(post) = m.get("post") {
+            let post_id = post.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+            if post_id == 0 {
+                continue;
+            }
+
+            // IQDB returns a minimal post object — we need the full post data.
+            // Fetch the complete post from the API.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            let full_post = find_e621_by_id(client, username, api_key, post_id)?;
+            if let Some(fp) = full_post {
+                return Ok(Some(fp));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Fetch a single e621 post by ID. Returns the full post JSON.
+fn find_e621_by_id(
+    client: &reqwest::blocking::Client,
+    username: &str,
+    api_key: &str,
+    post_id: i64,
+) -> Result<Option<serde_json::Value>, String> {
+    let resp = client
+        .get("https://e621.net/posts.json")
+        .basic_auth(username, Some(api_key))
+        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .query(&[
+            ("tags", format!("id:{}", post_id)),
+            ("limit", "1".to_string()),
+        ])
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("e621 post fetch HTTP {}", resp.status()));
+    }
+
+    let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    let posts = json.get("posts")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(posts.into_iter().next())
+}
+
+fn update_enrich_progress(
+    state: &Arc<MaintenanceState>,
+    checked: u32,
+    total: u32,
+    enriched: u32,
+    skipped: u32,
+) {
+    if let Ok(mut st) = state.fa_upgrade.lock() {
+        st.current = checked;
+        st.message = format!(
+            "Checked {}/{}... {} enriched, {} skipped",
+            checked, total, enriched, skipped
+        );
+    }
+}
+
+fn get_image_resolution(path: &std::path::Path) -> i64 {
+    if !path.exists() {
+        return 0;
+    }
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // Skip videos — can't easily compare resolution
+    if ["mp4", "webm"].contains(&ext.as_str()) {
+        return 0;
+    }
+
+    match image::image_dimensions(path) {
+        Ok((w, h)) => (w as i64) * (h as i64),
+        Err(_) => 0,
+    }
 }
