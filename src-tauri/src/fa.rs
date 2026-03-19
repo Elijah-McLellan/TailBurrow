@@ -88,7 +88,7 @@ fn check_db_exists(conn: &Connection, source: &str, id: &str) -> bool {
 
 fn check_local_md5(conn: &Connection, hash: &str) -> bool {
     let count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM items WHERE file_md5 = ?",
+        "SELECT COUNT(*) FROM items WHERE md5 = ?",
         [hash],
         |row| row.get(0),
     ).unwrap_or(0);
@@ -462,7 +462,7 @@ async fn run_sync_inner(
                     let tx = conn_mut.transaction().map_err(|e| e.to_string())?;
 
                     let insert_res = tx.execute(
-                        "INSERT INTO items (source, source_id, file_rel, file_md5, ext, rating, fav_count, score_total, created_at, added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        "INSERT INTO items (source, source_id, file_rel, md5, ext, rating, fav_count, score_total, created_at, added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params![
                             "e621",
                             e621_post.id.to_string(),
@@ -523,7 +523,7 @@ async fn run_sync_inner(
             let tx = conn_mut.transaction().map_err(|e| e.to_string())?;
 
             let insert_res = tx.execute(
-                "INSERT INTO items (source, source_id, file_rel, file_md5, ext, rating, created_at, added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO items (source, source_id, file_rel, md5, ext, rating, created_at, added_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params!["furaffinity", id_str, file_rel, hash_str, ext, rating_char, now, now],
             );
 

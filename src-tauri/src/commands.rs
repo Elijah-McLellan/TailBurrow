@@ -673,6 +673,144 @@ pub fn e621_sync_cancel(state: tauri::State<'_, Arc<Mutex<SyncState>>>) -> Resul
   Ok(Status { ok: true, message: "Cancel requested".into() })
 }
 
+/// Synchronous version of post download + DB insert for use in background threads.
+/// This avoids the block_on(async) pattern which can conflict with the Tokio runtime.
+fn download_and_insert_e621_post(
+    app: &AppHandle,
+    client: &reqwest::blocking::Client,
+    post: &E621PostInput,
+) -> Result<(), String> {
+    let root = get_root(app)?;
+    library::ensure_layout(&root)?;
+
+    // ── Dedup check ──
+    let conn = db::open(&library::db_path(&root))?;
+
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM items WHERE source='e621' AND source_id=? AND trashed_at IS NULL",
+            params![post.id.to_string()],
+            |r: &Row| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if exists > 0 {
+        return Ok(());
+    }
+
+    if let Some(ref md5) = post.file_md5 {
+        let md5_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE md5=? AND trashed_at IS NULL",
+                params![md5],
+                |r: &Row| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        if md5_exists > 0 {
+            return Ok(());
+        }
+    }
+
+    drop(conn);
+
+    // ── Build filename ──
+    let primary_artist = sanitize_slug(&pick_primary_artist(&post.tags.artist));
+    let ext = post.file_ext.trim().to_lowercase();
+
+    if ext.is_empty() {
+        return Err("Missing file_ext".into());
+    }
+
+    let base = format!("{primary_artist}_e621_{}.{}", post.id, ext);
+    let media_dir = root.join("media");
+    let mut filename = base.clone();
+    let mut dest_path = media_dir.join(&filename);
+
+    let mut n = 1;
+    while dest_path.exists() {
+        filename = format!("{primary_artist}_e621_{}_dup{}.{}", post.id, n, ext);
+        dest_path = media_dir.join(&filename);
+        n += 1;
+    }
+
+    // ── Download ──
+    let tmp_dir = root.join(".cache").join("tmp");
+    fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let tmp_path = tmp_dir.join(format!("{filename}.part"));
+
+    let resp = client
+        .get(&post.file_url)
+        .header("User-Agent", "TailBurrow/0.3.1 (local archiver)")
+        .send()
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", resp.status()));
+    }
+
+    let bytes = resp.bytes().map_err(|e| e.to_string())?;
+    let mut file = fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+    file.write_all(&bytes).map_err(|e| e.to_string())?;
+    file.flush().map_err(|e| e.to_string())?;
+
+    fs::rename(&tmp_path, &dest_path).map_err(|e| e.to_string())?;
+
+    // ── DB insert ──
+    let cleanup_path = dest_path.clone();
+    let db_result = (|| -> Result<(), String> {
+        let file_rel = format!("media/{}", filename.replace('\\', "/"));
+        generate_and_save_thumb(&root, &file_rel);
+
+        let added_at = Utc::now().to_rfc3339();
+
+        let mut conn = db::open(&library::db_path(&root))?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        tx.execute(
+            r#"
+            INSERT INTO items(source, source_id, md5, remote_url, file_rel, ext, rating, fav_count, score_total, created_at, added_at, primary_artist)
+            VALUES('e621', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+            params![
+                post.id.to_string(),
+                post.file_md5,
+                post.file_url,
+                file_rel,
+                ext,
+                post.rating,
+                post.fav_count,
+                post.score_total,
+                post.created_at,
+                added_at,
+                primary_artist
+            ],
+        ).map_err(|e| e.to_string())?;
+
+        let item_id = tx.last_insert_rowid();
+
+        insert_tags_for_item(&tx, item_id, &post.tags)?;
+
+        for u in &post.sources {
+            let sid = upsert_source(&tx, u)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO item_sources(item_id, source_row_id) VALUES(?, ?)",
+                params![item_id, sid],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+
+    if let Err(e) = db_result {
+        let _ = fs::remove_file(&cleanup_path);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn e621_sync_start(
   app: AppHandle,
@@ -707,6 +845,10 @@ pub fn e621_sync_start(
       let (username, api_key) = load_e621_creds()?;
 
       let client = reqwest::blocking::Client::new();
+      let download_client = reqwest::blocking::Client::builder()
+          .timeout(std::time::Duration::from_secs(120))
+          .build()
+          .unwrap_or_else(|_| reqwest::blocking::Client::new());
 
       let mut page: u32 = 1;
 
@@ -888,7 +1030,7 @@ pub fn e621_sync_start(
             st.status.new_attempted += 1;
           }
 
-          match tauri::async_runtime::block_on(add_e621_post(app2.clone(), post_input)) {
+        match download_and_insert_e621_post(&app2, &download_client, &post_input) {
             Ok(_) => {
               let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
               st.status.downloaded_ok += 1;
@@ -1242,8 +1384,6 @@ pub fn list_items(
     let sort_order = order.unwrap_or("newest".to_string());
 
     let root = get_root(&app)?;
-    let dedup_conn = db::open(&library::db_path(&root))?;
-    db::init_schema(&dedup_conn)?;
 
     // Base SQL
     with_db(&app, |conn| {
@@ -2916,7 +3056,7 @@ pub fn maintenance_start_fa_upgrade(
 
             let (username, api_key) = load_e621_creds()?;
             let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| e.to_string())?;
 
@@ -3081,9 +3221,7 @@ pub fn maintenance_start_fa_upgrade(
                         tags: e6_tags,
                     };
 
-                    match tauri::async_runtime::block_on(
-                        add_e621_post(app2.clone(), post_input)
-                    ) {
+                    match download_and_insert_e621_post(&app2, &client, &post_input) {
                         Ok(_) => {
                             upgraded_file += 1;
                             enriched += 1;

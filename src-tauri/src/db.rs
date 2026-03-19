@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 pub fn open(db_path: &Path) -> Result<Connection, String> {
   let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+  conn.busy_timeout(std::time::Duration::from_secs(30))
+    .map_err(|e| e.to_string())?;
   conn
     .pragma_update(None, "journal_mode", "WAL")
     .map_err(|e| e.to_string())?;
@@ -43,7 +45,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
 
     CREATE INDEX IF NOT EXISTS idx_items_added_at ON items(added_at);
     CREATE INDEX IF NOT EXISTS idx_items_trashed_at ON items(trashed_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_items_md5 ON items(md5) WHERE md5 IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_items_md5_lookup ON items(md5) WHERE md5 IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS tags (
       tag_id INTEGER PRIMARY KEY,
@@ -94,18 +96,29 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
   )
   .map_err(|e| e.to_string())?;
 
-  // Migration: Add file_md5 column if it doesn't exist
-  let count: u32 = conn.query_row(
+  // Migration: Copy any data from legacy file_md5 column into md5 column
+  let has_file_md5: u32 = conn.query_row(
       "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='file_md5'",
       [],
       |row| row.get(0),
   ).unwrap_or(0);
 
-  if count == 0 {
-      conn.execute("ALTER TABLE items ADD COLUMN file_md5 TEXT", []).map_err(|e| e.to_string())?;
-      // Create index for fast lookups
-      conn.execute("CREATE INDEX IF NOT EXISTS idx_items_md5 ON items(file_md5)", []).map_err(|e| e.to_string())?;
+  if has_file_md5 > 0 {
+      // Move any data that was stored in the wrong column
+      conn.execute(
+          "UPDATE items SET md5 = file_md5 WHERE file_md5 IS NOT NULL AND (md5 IS NULL OR md5 = '')",
+          [],
+      ).ok();
   }
+
+  // Migration: Replace unique MD5 index with non-unique
+  conn.execute("DROP INDEX IF EXISTS idx_items_md5", []).ok();
+
+  // Ensure the non-unique lookup index exists
+  conn.execute(
+      "CREATE INDEX IF NOT EXISTS idx_items_md5_lookup ON items(md5) WHERE md5 IS NOT NULL",
+      [],
+  ).ok();
 
   conn.execute_batch(
       "
