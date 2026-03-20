@@ -560,7 +560,9 @@ async fn run_sync_inner(
         }
 
         page += 1;
-        if page > 50 {
+        if page > 500 {
+            let mut s = state.status.lock().map_err(|e| e.to_string())?;
+            s.current_message = "Reached page limit (500). If you have more favorites, run sync again.".to_string();
             break;
         }
     }

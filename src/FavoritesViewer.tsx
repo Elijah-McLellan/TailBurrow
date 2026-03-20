@@ -619,9 +619,9 @@ const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, o
   );
 });
 
-const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, setAutoscrollSpeed, hidden, isStudio }: {
+const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, setAutoscrollSpeed, hidden }: {
   active: boolean; autoscroll: boolean; setAutoscroll: (v: boolean) => void;
-  autoscrollSpeed: number; setAutoscrollSpeed: (v: number) => void; hidden: boolean; isStudio?: boolean;
+  autoscrollSpeed: number; setAutoscrollSpeed: (v: number) => void; hidden: boolean;
 }) => {
   if (!active || hidden) return null;
 
@@ -630,9 +630,7 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
       <button
         onClick={() => setAutoscroll(true)}
         className={`fixed bottom-12 right-4 px-3 py-2 rounded-xl shadow-lg border transition-all z-40 flex items-center gap-2 text-xs font-medium ${
-          isStudio
-            ? 'bg-[#161621] hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white border-[#1d1b2d]'
-            : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white border-gray-600'
+          'bg-[#161621] hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white border-[#1d1b2d]'
         }`}
         title="Start Autoscroll"
       >
@@ -644,12 +642,12 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
 
   return (
     <div className={`fixed bottom-12 right-4 backdrop-blur border rounded-xl shadow-xl z-40 animate-in fade-in slide-in-from-bottom-4 ${
-      isStudio ? 'bg-[#161621]/95 border-[#1d1b2d]' : 'bg-gray-900/95 border-gray-600'
+      'bg-[#161621]/95 border-[#1d1b2d]'
     }`}>
       <div className="flex items-center gap-2 p-2">
         <button
           onClick={() => setAutoscroll(false)}
-          className={`p-1.5 rounded-lg transition-colors ${isStudio ? 'hover:bg-[#1d1b2d] text-red-400' : 'hover:bg-gray-700 text-red-400'}`}
+          className={`p-1.5 rounded-lg transition-colors hover:bg-[#1d1b2d] text-red-400`}
           title="Stop"
         >
           <Pause className="w-4 h-4" />
@@ -661,16 +659,16 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
           step="0.5"
           value={autoscrollSpeed}
           onChange={(e) => setAutoscrollSpeed(Number(e.target.value))}
-          className={`w-24 h-1.5 cursor-pointer ${isStudio ? 'accent-[#967abc]' : 'accent-purple-500'}`}
+          className="w-24 h-1.5 cursor-pointer accent-[#967abc]"
         />
-        <span className={`text-[10px] font-mono w-6 text-right ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>{autoscrollSpeed}x</span>
+        <span className="text-[10px] font-mono w-6 text-right text-[#9e98aa]">{autoscrollSpeed}x</span>
       </div>
     </div>
   );
 };
 
-const ComicPage = ({ post, comicScale, isStudio }: {
-  post: PoolPost; comicScale: number; isStudio: boolean;
+const ComicPage = ({ post, comicScale }: {
+  post: PoolPost; comicScale: number;
 }) => {
   const isVideo = ['mp4', 'webm'].includes(post.ext.toLowerCase());
   const isLocal = post.item_id !== 0;
@@ -723,14 +721,14 @@ const ComicPage = ({ post, comicScale, isStudio }: {
       {loading ? (
         <div
           className="w-full max-w-full aspect-video flex items-center justify-center"
-          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+          style={{ backgroundColor: '#0a0a12' }}
         >
           <Loader2 className="w-8 h-8 animate-spin text-gray-500" />
         </div>
       ) : error ? (
         <div
           className="w-full aspect-video flex flex-col items-center justify-center gap-2 text-gray-500"
-          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+          style={{ backgroundColor: '#0a0a12' }}
         >
           <p className="text-sm">Failed to load video</p>
           <button
@@ -740,7 +738,7 @@ const ComicPage = ({ post, comicScale, isStudio }: {
                 openUrl(url);
               } catch { /* ignore */ }
             }}
-            className={`text-xs px-3 py-1.5 rounded-lg ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#967abc]' : 'bg-gray-700 hover:bg-gray-600 text-purple-400'}`}
+            className={`text-xs px-3 py-1.5 rounded-lg bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#967abc]`}
           >
             View on e621
           </button>
@@ -753,7 +751,7 @@ const ComicPage = ({ post, comicScale, isStudio }: {
           playsInline
           preload="auto"
           className="w-full h-auto max-w-full"
-          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000', display: 'block' }}
+          style={{ backgroundColor: '#0a0a12'}}
         />
       ) : (
         <img
@@ -761,7 +759,7 @@ const ComicPage = ({ post, comicScale, isStudio }: {
           alt={`Page ${post.position + 1}`}
           className="w-full h-auto block max-w-full"
           loading="lazy"
-          style={{ backgroundColor: isStudio ? '#0a0a12' : '#000' }}
+          style={{ backgroundColor: '#0a0a12' }}
           referrerPolicy="no-referrer"
         />
       )}
@@ -839,7 +837,59 @@ const SkeletonFeedPost = ({ index = 0, dark }: { index?: number; dark?: boolean 
 );
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────
-export default function FavoritesViewer() {
+// ─── ERROR BOUNDARY ──────────────────────────────────────────
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("TailBurrow crashed:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-screen flex items-center justify-center bg-[#0f0f17] text-white">
+          <div className="text-center max-w-md px-6">
+            <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-[#1d1b2d] flex items-center justify-center">
+              <svg className="w-8 h-8 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold mb-2">Something went wrong</h2>
+            <p className="text-[#9e98aa] text-sm mb-4">
+              {this.state.error?.message || "An unexpected error occurred."}
+            </p>
+            <button
+              onClick={() => {
+                this.setState({ hasError: false, error: null });
+              }}
+              className="px-6 py-2.5 rounded-xl bg-[#967abc] hover:bg-[#967abc]/80 text-white font-medium transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// ─── MAIN COMPONENT ──────────────────────────────────────────
+function FavoritesViewerInner() {
   type ConfirmOpts = { title: string; message: string; okLabel?: string; cancelLabel?: string; onConfirm: () => void };
   const [confirmModal, setConfirmModal] = useState<ConfirmOpts | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -1034,7 +1084,6 @@ export default function FavoritesViewer() {
   const [importLoading, setImportLoading] = useState(false);
 
   // --- DERIVED STATE (stable) ---
-  const isStudio = true; // Single unified dark theme
   const currentItem = items[currentIndex] || null;
   const filteredPools = useMemo(() => {
     if (!comicSearchInput.trim()) return pools;
@@ -2147,7 +2196,8 @@ if (loadingFeedsRef.current[feedId]) return;
     };
   }, []);
 
-  // Slideshow (removed currentIndex from deps to avoid timer reset) uses timeout so video-wait is re-evaluated each slide
+  // Slideshow: timer resets on each slide change via currentIndex dep.
+  // isVideo dep changes with currentIndex since it's derived from currentItem.
   useEffect(() => {
     if (!isSlideshow || itemCount === 0) return;
     if (waitForVideoEnd && isVideo) return;
@@ -2238,7 +2288,7 @@ if (loadingFeedsRef.current[feedId]) return;
     if (!autoscroll) return;
     let frameId: number;
     const scroll = () => {
-      if (isStudio || activeTab === 'feeds') {
+      if ( activeTab === 'feeds') {
         // Find the scrollable container
         if (!autoscrollTargetRef.current) {
           const candidates = document.querySelectorAll('.overflow-y-auto');
@@ -2260,7 +2310,7 @@ if (loadingFeedsRef.current[feedId]) return;
       cancelAnimationFrame(frameId);
       autoscrollTargetRef.current = null;
     };
-  }, [autoscroll, autoscrollSpeed, isStudio, activeTab]);
+  }, [autoscroll, autoscrollSpeed, activeTab]);
 
   // Comic autoscroll
   useEffect(() => {
@@ -2519,8 +2569,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         </div>
       )}
       {/* Header */}
-      <div className={`border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d] bg-[#161621]' : 'border-gray-700'}`}>
-        <div className={isStudio ? "px-4" : "max-w-7xl mx-auto px-4"}>
+      <div className={`border-b flex-shrink-0 border-[#1d1b2d] bg-[#161621]`}>
+        <div className={"px-4"}>
           <div className="flex items-center gap-4 py-2">
             <div className="flex gap-1 flex-shrink-0">
               <button onClick={() => setActiveTab('viewer')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'viewer' ? 'border-[#967abc] text-[#967abc]' : 'border-transparent text-[#9e98aa] hover:text-white'}`}><Database className="w-3.5 h-3.5" />Library</button>
@@ -2534,7 +2584,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   }
                 }
               }} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'feeds' ? 'border-[#967abc] text-[#967abc]' : 'border-transparent text-[#9e98aa] hover:text-white'}`}><Rss className="w-3.5 h-3.5" />Discover</button>
-              <button onClick={() => setActiveTab('comics')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'comics' ? (isStudio ? 'border-[#967abc] text-[#967abc]' : 'border-purple-500 text-purple-400') : (isStudio ? 'border-transparent text-[#9e98aa] hover:text-white' : 'border-transparent text-gray-400 hover:text-gray-300')}`}><BookOpen className="w-3.5 h-3.5" />Comics</button>
+              <button onClick={() => setActiveTab('comics')} className={`px-3 py-1.5 font-medium border-b-2 transition flex items-center gap-1.5 text-sm ${activeTab === 'comics' ? ('border-[#967abc] text-[#967abc]') : ('border-transparent text-[#9e98aa] hover:text-white')}`}><BookOpen className="w-3.5 h-3.5" />Comics</button>
             </div>
 
             <div className="flex flex-1 items-center gap-2 min-w-0">
@@ -2615,14 +2665,14 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   </div>
                   {activeTab === 'viewer' && (
                     <>
-                      <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
+                      <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}>
                         <option value="default">Default</option>
                         <option value="random">Random</option>
                         <option value="score">Score</option>
                         <option value="newest">Newest</option>
                         <option value="oldest">Oldest</option>
                       </select>
-                      <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}>
+                      <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}>
                         <option value="all">All</option>
                         <option value="e621">e621</option>
                         <option value="furaffinity">FurAffinity</option>
@@ -2633,7 +2683,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                 </>
               ) : (
                 <div className="flex-1 min-w-[150px] relative">
-                  <Search className={`absolute left-3 top-2 w-3.5 h-3.5 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`} />
+                  <Search className={`absolute left-3 top-2 w-3.5 h-3.5 text-[#4c4b5a]`} />
                   <input
                     type="text"
                     placeholder="Search e621 tags..."
@@ -2644,19 +2694,19 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         searchFeedPosts(feedSearchInput);
                       }
                     }}
-                    className={`w-full pl-9 pr-3 py-1.5 text-sm rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]' : 'bg-gray-800 border border-gray-700 focus:border-purple-500'}`}
+                    className={`w-full pl-9 pr-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] text-white placeholder-[#4c4b5a]`}
                   />
                 </div>
               )}
             </div>
             <button
               onClick={openImportModal}
-              className={`p-1.5 flex-shrink-0 ${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`}
+              className={`p-1.5 flex-shrink-0 text-[#9e98aa] hover:text-white`}
               title="Import Files"
             >
               <Upload className="w-4 h-4" />
             </button>
-            <button onClick={() => setShowSettings(true)} className={`p-1.5 flex-shrink-0 ${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`} title="Settings">
+            <button onClick={() => setShowSettings(true)} className={`p-1.5 flex-shrink-0 text-[#9e98aa] hover:text-white`} title="Settings">
               <Settings className="w-4 h-4" />
             </button>
           </div>
@@ -2990,10 +3040,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
 
       {/* Feeds Tab */}
       {activeTab === 'feeds' && (
-        <div ref={feedsContainerRef} className={`flex-1 flex overflow-hidden ${isStudio ? 'bg-[#0f0f17]' : ''}`}>
+        <div ref={feedsContainerRef} className={`flex-1 flex overflow-hidden bg-[#0f0f17]`}>
           {/* Feed grid pane */}
           <div className={`${feedDetailOpen && selectedFeedPost ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto`} style={feedDetailOpen && selectedFeedPost ? { width: `calc(100% - ${feedDetailWidth}px - 6px)` } : undefined}>
-            <div className={isStudio ? "p-4" : "max-w-7xl mx-auto p-4"}>
+            <div className={"p-4"}>
               {/* Feed pills */}
               <div className="flex justify-center items-center gap-2 mb-4 flex-wrap relative">
                 {feeds.map((feed, index) => {
@@ -3012,7 +3062,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       <div
                         className={`transition-all duration-200 ease-out rounded-full ${
                           insertBefore
-                            ? (isStudio ? 'w-1 h-8 bg-[#967abc] mx-1' : 'w-1 h-8 bg-purple-500 mx-1')
+                            ? ('w-1 h-8 bg-[#967abc] mx-1')
                             : 'w-0 h-8 mx-0'
                         }`}
                       />
@@ -3125,8 +3175,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                           isDragging
                             ? 'opacity-30 scale-95'
                             : isActive
-                            ? (isStudio ? 'bg-[#967abc] text-white shadow-lg' : 'bg-purple-600 text-white shadow-lg')
-                            : (isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
+                            ? ('bg-[#967abc] text-white shadow-lg')
+                            : ( 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]')
                         }`}
                       >
                         <span className="flex items-center gap-1.5">
@@ -3149,16 +3199,14 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       </button>
                       {/* Insert indicator after last item */}
                       {insertAfter && (
-                        <div className={`transition-all duration-200 ease-out rounded-full ${
-                          isStudio ? 'w-1 h-8 bg-[#967abc] mx-1' : 'w-1 h-8 bg-purple-500 mx-1'
-                        }`} />
+                        <div className={`transition-all duration-200 ease-out rounded-full 'w-1 h-8 bg-[#967abc] mx-1`} />
                       )}
                     </div>
                   );
                 })}
                 <button
                   onClick={() => { setEditingFeedId(null); setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(true); }}
-                  className={`p-2 rounded-full text-sm transition-all ${isStudio ? 'bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+                  className={`p-2 rounded-full text-sm transition-all bg-[#1c1b26] text-[#9e98aa] hover:bg-[#1d1b2d]`}
                 >
                   <Plus className="w-4 h-4" />
                 </button>
@@ -3167,9 +3215,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               {/* Floating ghost pill */}
               {feedDrag && createPortal(
                 <div
-                  className={`fixed z-[9999] pointer-events-none px-4 py-2 rounded-full text-sm font-medium shadow-2xl ${
-                    isStudio ? 'bg-[#967abc] text-white' : 'bg-purple-600 text-white'
-                  }`}
+                  className={`fixed z-[9999] pointer-events-none px-4 py-2 rounded-full text-sm font-medium shadow-2xl bg-[#967abc] text-white`}
                   style={{
                     left: feedDrag.ghostX - feedDrag.ghostWidth / 2,
                     top: feedDrag.ghostY - feedDrag.ghostHeight / 2,
@@ -3189,7 +3235,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
 
               {/* Feed content */}
               {feedSearchInput && !feedSearchLoading && feedSearchResults.length === 0 ? (
-                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>
+                <div className={`text-center py-20 text-[#4c4b5a]`}>
                   <Search className="w-12 h-12 mx-auto mb-3 opacity-30" />
                   <p>No results found</p>
                 </div>
@@ -3197,7 +3243,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                 feedSearchLoading ? (
                   <Masonry breakpointCols={{ default: feedDetailOpen && selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                     {Array.from({ length: gridColumns * 2 }).map((_, i) => (
-                      <SkeletonFeedPost key={`search-skeleton-${i}`} index={i} dark={isStudio} />
+                      <SkeletonFeedPost key={`search-skeleton-${i}`} index={i} dark={true} />
                     ))}
                   </Masonry>
                 ) : (
@@ -3247,20 +3293,20 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         disabled={!e621CredInfo.username || !e621CredInfo.has_api_key || !!loadingFeeds[feed.id] || !!feedPaging[feed.id]?.done}
                         onVisible={() => fetchFeedPosts(feed.id, feed.query)}
                       />
-                      {feedPaging[feed.id]?.done && <div className={`text-center text-sm py-4 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>End of results</div>}
+                      {feedPaging[feed.id]?.done && <div className={`text-center text-sm py-4 text-[#4c4b5a]`}>End of results</div>}
                     </>
                   ) : loadingFeeds[feed.id] ? (
                   <Masonry breakpointCols={{ default: feedDetailOpen && selectedFeedPost ? Math.max(2, gridColumns - 2) : gridColumns, 700: 2, 500: 1 }} className="flex w-auto gap-3" columnClassName="flex flex-col gap-3">
                       {Array.from({ length: gridColumns * 2 }).map((_, i) => (
-                        <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} dark={isStudio} />
+                        <SkeletonFeedPost key={`feed-skeleton-${i}`} index={i} dark={true} />
                       ))}
                     </Masonry>
                   ) : (
-                    <div className={`text-center py-20 italic ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>"Nobody here but us dergs"</div>
+                    <div className={`text-center py-20 italic text-[#4c4b5a]`}>"Nobody here but us dergs"</div>
                   );
                 })()
               ) : (
-                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-400'}`}>
+                <div className={`text-center py-20 text-[#4c4b5a]`}>
                   {feeds.length > 0 ? (
                     <p className="text-xl mb-2">Select a feed or search above</p>
                   ) : (
@@ -3399,17 +3445,17 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           {showAddFeedModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-black/60" onClick={() => { setShowAddFeedModal(false); setEditingFeedId(null); setNewFeedName(''); setNewFeedQuery(''); }} />
-              <div className={`relative z-10 w-full max-w-xl rounded-xl p-6 ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
+              <div className={`relative z-10 w-full max-w-xl rounded-xl p-6 bg-[#161621] border border-[#1d1b2d]`}>
                 <h2 className="text-xl font-bold mb-4">{editingFeedId ? 'Edit Feed' : 'Add New Feed'}</h2>
                 <div className="space-y-4">
                   <div>
-                    <label className={`text-sm mb-1 block ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>Feed Name</label>
-                    <input type="text" placeholder="e.g., Cute Foxes" value={newFeedName} onChange={(e) => setNewFeedName(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
+                    <label className={`text-sm mb-1 block text-[#9e98aa]`}>Feed Name</label>
+                    <input type="text" placeholder="e.g., Cute Foxes" value={newFeedName} onChange={(e) => setNewFeedName(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`} />
                   </div>
                   <div>
-                    <label className={`text-sm mb-1 block ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>Search Query</label>
-                    <input type="text" placeholder="e.g., fox cute rating:s score:>200" value={newFeedQuery} onChange={(e) => setNewFeedQuery(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`} />
-                    <p className={`text-xs mt-1 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>Use e621 search syntax.</p>
+                    <label className={`text-sm mb-1 block text-[#9e98aa]`}>Search Query</label>
+                    <input type="text" placeholder="e.g., fox cute rating:s score:>200" value={newFeedQuery} onChange={(e) => setNewFeedQuery(e.target.value)} className={`w-full px-4 py-2 rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`} />
+                    <p className={`text-xs mt-1 text-[#4c4b5a]`}>Use e621 search syntax.</p>
                   </div>
                   <div className="flex justify-between">
                     {editingFeedId ? (
@@ -3428,7 +3474,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       </button>
                     ) : <div />}
                     <div className="flex gap-3">
-                      <button onClick={() => { setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(false); setEditingFeedId(null); }} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>
+                      <button onClick={() => { setNewFeedName(''); setNewFeedQuery(''); setShowAddFeedModal(false); setEditingFeedId(null); }} className={`px-4 py-2 rounded-xl bg-[#1d1b2d] hover:bg-[#4c4b5a]`}>Cancel</button>
                       <button
                         onClick={() => {
                           if (!newFeedQuery.trim()) { toast("Please enter a search query.", "error"); return; }
@@ -3442,7 +3488,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                           }
                           setNewFeedQuery(''); setNewFeedName(''); setShowAddFeedModal(false); setEditingFeedId(null);
                         }}
-                        className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
+                        className={`px-4 py-2 rounded-xl bg-[#967abc] hover:bg-[#967abc]/80`}
                       >
                         {editingFeedId ? 'Save Changes' : 'Create Feed'}
                       </button>
@@ -3456,36 +3502,36 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       )}
       {/* Comics Tab */}
       {activeTab === 'comics' && (
-        <div className={`flex-1 overflow-hidden flex flex-col w-full min-w-0 ${isStudio ? 'bg-[#0f0f17]' : ''}`}>
+        <div className={`flex-1 overflow-hidden flex flex-col w-full min-w-0 bg-[#0f0f17]`}>
           {selectedPool ? (
       // Comic reader view
             <div className="flex-1 relative overflow-hidden flex flex-col w-full min-w-0">
               {/* Floating Header */}
               <div className="absolute top-0 left-0 right-0 z-20 p-4 pointer-events-none flex justify-between items-start">
                 {/* Back & Info Card */}
-                <div className={`pointer-events-auto flex items-center gap-3 p-2.5 pr-5 rounded-2xl backdrop-blur-md border shadow-xl ${isStudio ? 'bg-[#161621]/80 border-[#1d1b2d]' : 'bg-gray-900/80 border-gray-700'}`}>
-                  <button onClick={closePool} className={`p-2 rounded-xl transition-colors ${isStudio ? 'hover:bg-[#1d1b2d] text-white' : 'hover:bg-gray-700 text-white'}`}>
+                <div className={`pointer-events-auto flex items-center gap-3 p-2.5 pr-5 rounded-2xl backdrop-blur-md border shadow-xl bg-[#161621]/80 border-[#1d1b2d]`}>
+                  <button onClick={closePool} className={`p-2 rounded-xl transition-colors hover:bg-[#1d1b2d] text-white`}>
                     <ArrowLeft className="w-5 h-5" />
                   </button>
                   <div>
                     <h2 className="font-bold text-sm tracking-wide text-white drop-shadow-md">{selectedPool.name}</h2>
-                    <p className={`text-xs font-medium drop-shadow-md ${isStudio ? 'text-[#9e98aa]' : 'text-gray-300'}`}>
+                    <p className={`text-xs font-medium drop-shadow-md text-[#9e98aa]`}>
                       Pool #{selectedPool.pool_id} • {poolPosts.filter(p => p.item_id !== 0).length} local • {poolPosts.length} total
                     </p>
                   </div>
                 </div>
 
                 {/* Controls Card */}
-                <div className={`pointer-events-auto flex items-center gap-2 p-2 rounded-2xl backdrop-blur-md border shadow-xl ${isStudio ? 'bg-[#161621]/80 border-[#1d1b2d]' : 'bg-gray-900/80 border-gray-700'}`}>
-                  <button onClick={() => setComicScale(s => Math.max(10, s - 10))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
+                <div className={`pointer-events-auto flex items-center gap-2 p-2 rounded-2xl backdrop-blur-md border shadow-xl bg-[#161621]/80 border-[#1d1b2d]`}>
+                  <button onClick={() => setComicScale(s => Math.max(10, s - 10))} className={`p-2 rounded-xl text-white hover:bg-[#1d1b2d]`}>
                     <ZoomOut className="w-4 h-4" />
                   </button>
                   <span className="text-sm font-medium w-12 text-center text-white drop-shadow-md">{comicScale}%</span>
-                  <button onClick={() => setComicScale(s => Math.min(100, s + 10))} className={`p-2 rounded-xl text-white ${isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700'}`}>
+                  <button onClick={() => setComicScale(s => Math.min(100, s + 10))} className={`p-2 rounded-xl text-white hover:bg-[#1d1b2d]`}>
                     <ZoomIn className="w-4 h-4" />
                   </button>
                   <div className="w-px h-6 bg-gray-500/50 mx-1" />
-                  <button onClick={() => setComicAutoscroll(!comicAutoscroll)} className={`p-2 rounded-xl flex items-center gap-1.5 transition-colors text-white ${comicAutoscroll ? (isStudio ? 'bg-[#967abc]' : 'bg-purple-600') : (isStudio ? 'hover:bg-[#1d1b2d]' : 'hover:bg-gray-700')}`}>
+                  <button onClick={() => setComicAutoscroll(!comicAutoscroll)} className={`p-2 rounded-xl flex items-center gap-1.5 transition-colors text-white ${comicAutoscroll ? ('bg-[#967abc]') : ('hover:bg-[#1d1b2d]')}`}>
                     {comicAutoscroll ? <Pause className="w-4 h-4" /> : <ChevronsDown className="w-4 h-4" />}
                   </button>
                   {comicAutoscroll && (
@@ -3496,7 +3542,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       step="0.5"
                       value={comicAutoscrollSpeed}
                       onChange={(e) => setComicAutoscrollSpeed(Number(e.target.value))}
-                      className={`w-20 cursor-pointer mr-2 ${isStudio ? 'accent-[#967abc]' : 'accent-purple-500'}`}
+                      className={`w-20 cursor-pointer mr-2 accent-[#967abc]`}
                     />
                   )}
                 </div>
@@ -3506,10 +3552,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               <div ref={comicContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden w-full min-w-0">
                 {poolPostsLoading ? (
                   <div className="flex items-center justify-center py-20">
-                    <Loader2 className={`w-8 h-8 animate-spin ${isStudio ? 'text-[#967abc]' : 'text-purple-500'}`} />
+                    <Loader2 className={`w-8 h-8 animate-spin text-[#967abc]`} />
                   </div>
                 ) : poolPosts.length === 0 ? (
-                  <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                  <div className={`text-center py-20 text-[#4c4b5a]`}>
                     <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-30" />
                     <p>No pages from this pool in your library</p>
                     <p className="text-sm mt-2">Favorite more posts from this pool on e621</p>
@@ -3521,7 +3567,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         key={`${post.source_id}-${post.position}`}
                         post={post}
                         comicScale={comicScale}
-                        isStudio={isStudio}
                       />
                     ))}
                   </div>
@@ -3530,7 +3575,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
             </div>
           ) : (
             // Pool grid view
-            <div className={`flex-1 overflow-y-auto overflow-x-hidden p-4 w-full min-w-0 ${!isStudio ? 'max-w-7xl mx-auto' : ''}`}>
+            <div className={`flex-1 overflow-y-auto overflow-x-hidden p-4 w-full min-w-0`}>
               <div className="flex items-center justify-between gap-4 mb-4">
                 <h2 className="text-xl font-bold flex-shrink-0">Comics & Pools</h2>
                 
@@ -3538,7 +3583,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   {pools.length > 0 && !poolsLoading && (
                     <button
                       onClick={handleClearPoolsCache}
-                      className={`p-2 rounded-xl transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-red-900/50 text-[#9e98aa] hover:text-red-400' : 'bg-gray-700 hover:bg-red-900/50 text-gray-400 hover:text-red-400'}`}
+                      className={`p-2 rounded-xl transition-colors bg-[#1d1b2d] hover:bg-red-900/50 text-[#9e98aa] hover:text-red-400`}
                       title="Clear Cache"
                     >
                       <Trash2 className="w-5 h-5" />
@@ -3547,17 +3592,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   <button
                     onClick={loadPools}
                     disabled={poolsLoading}
-                    className={`relative overflow-hidden flex items-center justify-center min-w-[40px] px-3 py-2 rounded-xl transition-colors ${
-                      isStudio 
-                        ? (poolsLoading ? 'bg-[#1c1b26] border border-[#1d1b2d] text-[#9e98aa]' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa]') 
-                        : (poolsLoading ? 'bg-gray-800 border border-gray-700 text-gray-400' : 'bg-gray-700 hover:bg-gray-600 text-gray-400')
-                    }`}
+                    className={`relative overflow-hidden flex items-center justify-center min-w-[40px] px-3 py-2 rounded-xl transition-colors (poolsLoading ? 'bg-[#1c1b26] border border-[#1d1b2d] text-[#9e98aa]' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa]')`}
                     title="Scan Favorites for Pools"
                   >
                     {poolsLoading && poolScanProgress ? (
                       <>
                         <div 
-                          className={`absolute left-0 top-0 bottom-0 opacity-20 transition-all duration-300 ${isStudio ? 'bg-[#967abc]' : 'bg-purple-500'}`}
+                          className={`absolute left-0 top-0 bottom-0 opacity-20 transition-all duration-300 bg-[#967abc]`}
                           style={{ width: `${(poolScanProgress.current / poolScanProgress.total) * 100}%` }}
                         />
                         <span className="relative z-10 text-xs font-mono font-medium flex items-center gap-2">
@@ -3576,20 +3617,20 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
 
               {/* Grid or Empty State */}
               {filteredPools.length === 0 && !poolsLoading ? (
-                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                <div className={`text-center py-20 text-[#4c4b5a]`}>
                   <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-30" />
                   <p className="text-xl mb-2">Comics & Pools</p>
                   <p className="text-sm mb-6">Scan your e621 favorites to find pools (comics, series, etc.)</p>
                   <button
                     onClick={loadPools}
-                    className={`px-6 py-3 rounded-xl text-white font-medium flex items-center gap-2 mx-auto ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}
+                    className={`px-6 py-3 rounded-xl text-white font-medium flex items-center gap-2 mx-auto bg-[#967abc] hover:bg-[#967abc]/80`}
                   >
                     <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8V3"/><path d="M21 3v5h-5"/></svg>
                     Start Scan
                   </button>
                 </div>
               ) : filteredPools.length === 0 && poolsLoading ? (
-                 <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                 <div className={`text-center py-20 text-[#4c4b5a]`}>
                    <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-10 animate-pulse" />
                    <p>Looking for comics...</p>
                  </div>
@@ -3609,7 +3650,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     <div
                       key={pool.pool_id}
                       onClick={() => openPool(pool)}
-                      className={`group cursor-pointer rounded-lg overflow-hidden border transition-all ${isStudio ? 'bg-[#161621] border-[#1d1b2d] hover:border-[#967abc]' : 'bg-gray-800 border-gray-700 hover:border-purple-500'}`}
+                      className={`group cursor-pointer rounded-lg overflow-hidden border transition-all bg-[#161621] border-[#1d1b2d] hover:border-[#967abc]`}
                     >
                       {pool.cover_url ? (
                         <img
@@ -3624,19 +3665,19 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                             const fallback = document.createElement('div');
                             fallback.className = 'w-full flex items-center justify-center';
                             fallback.style.aspectRatio = '3/4';
-                            fallback.style.backgroundColor = isStudio ? '#1d1b2d' : '#374151';
+                            fallback.style.backgroundColor = '#1d1b2d';
                             fallback.innerHTML = '<svg style="width:3rem;height:3rem;opacity:0.3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>';
                             e.currentTarget.parentElement?.appendChild(fallback);
                           }}
                         />
                       ) : (
-                        <div className={`w-full aspect-[3/4] flex items-center justify-center ${isStudio ? 'bg-[#1d1b2d]' : 'bg-gray-700'}`}>
+                        <div className={`w-full aspect-[3/4] flex items-center justify-center bg-[#1d1b2d]`}>
                           <BookOpen className="w-12 h-12 opacity-30" />
                         </div>
                       )}
-                      <div className={`p-3 ${isStudio ? 'bg-[#161621]' : 'bg-gray-800'}`}>
+                      <div className={`p-3 bg-[#161621]`}>
                         <h3 className="font-medium text-sm truncate">{pool.name}</h3>
-                        <p className={`text-xs mt-1 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>{pool.post_count} pages</p>
+                        <p className={`text-xs mt-1 text-[#4c4b5a]`}>{pool.post_count} pages</p>
                       </div>
                     </div>
                   ))}
@@ -4225,10 +4266,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {showEditModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setShowEditModal(false)} />
-          <div className={`relative z-10 w-full max-w-2xl max-h-[90vh] rounded-xl flex flex-col shadow-2xl ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
-            <div className={`flex items-center justify-between p-5 border-b ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
+          <div className={`relative z-10 w-full max-w-2xl max-h-[90vh] rounded-xl flex flex-col shadow-2xl bg-[#161621] border border-[#1d1b2d]`}>
+            <div className={`flex items-center justify-between p-5 border-b border-[#1d1b2d]`}>
               <h2 className="text-xl font-bold">Edit Post Metadata</h2>
-              <button onClick={() => setShowEditModal(false)} className={`${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-white'}`}><X className="w-5 h-5" /></button>
+              <button onClick={() => setShowEditModal(false)} className={`text-[#9e98aa] hover:text-white`}><X className="w-5 h-5" /></button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -4260,13 +4301,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         setNewSourceInput("");
                       }
                     }}
-                    className={`flex-1 px-3 py-2 rounded-xl focus:outline-none text-sm ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
+                    className={`flex-1 px-3 py-2 rounded-xl focus:outline-none text-sm bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}
                   />
-                  <button onClick={() => { if (newSourceInput.trim() && !editingSources.includes(newSourceInput.trim())) { setEditingSources([...editingSources, newSourceInput.trim()]); setNewSourceInput(""); } }} className={`px-3 py-2 rounded-xl text-sm ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-600 hover:bg-gray-500'}`}>Add</button>
+                  <button onClick={() => { if (newSourceInput.trim() && !editingSources.includes(newSourceInput.trim())) { setEditingSources([...editingSources, newSourceInput.trim()]); setNewSourceInput(""); } }} className={`px-3 py-2 rounded-xl text-sm bg-[#1d1b2d] hover:bg-[#4c4b5a]`}>Add</button>
                 </div>
                 <div className="space-y-1">
                   {editingSources.map((src, i) => (
-                    <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-xl ${isStudio ? 'bg-[#0f0f17] border border-[#1d1b2d]' : 'bg-gray-900/50 border border-gray-700'}`}>
+                    <div key={i} className={`flex items-center justify-between px-3 py-2 rounded-xl bg-[#0f0f17] border border-[#1d1b2d]`}>
                       <a href={src} target="_blank" rel="noreferrer" className="text-xs text-blue-400 hover:underline truncate mr-2">{src}</a>
                       <button onClick={() => setEditingSources(prev => prev.filter(s => s !== src))} className="text-gray-500 hover:text-red-400"><X className="w-4 h-4" /></button>
                     </div>
@@ -4291,13 +4332,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         setNewTagInput("");
                       }
                     }}
-                    className={`flex-1 px-3 py-2 rounded-xl focus:outline-none text-sm ${isStudio ? 'bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]' : 'bg-gray-700 border border-gray-600 focus:border-purple-500'}`}
+                    className={`flex-1 px-3 py-2 rounded-xl focus:outline-none text-sm bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}
                   />
-                  <button onClick={() => { const t = newTagInput.trim().toLowerCase(); if (t && !editingTags.includes(t)) { setEditingTags([...editingTags, t]); setNewTagInput(""); } }} className={`px-3 py-2 rounded-xl text-sm ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-600 hover:bg-gray-500'}`}>Add</button>
+                  <button onClick={() => { const t = newTagInput.trim().toLowerCase(); if (t && !editingTags.includes(t)) { setEditingTags([...editingTags, t]); setNewTagInput(""); } }} className={`px-3 py-2 rounded-xl text-sm bg-[#1d1b2d] hover:bg-[#4c4b5a]`}>Add</button>
                 </div>
-                <div className={`flex flex-wrap gap-2 p-3 rounded-xl min-h-[100px] content-start ${isStudio ? 'bg-[#0f0f17] border border-[#1d1b2d]' : 'bg-gray-900/50 border border-gray-700'}`}>
+                <div className={`flex flex-wrap gap-2 p-3 rounded-xl min-h-[100px] content-start bg-[#0f0f17] border border-[#1d1b2d]`}>
                   {editingTags.map(tag => (
-                    <span key={tag} className={`px-2.5 py-1 rounded-full text-sm flex items-center gap-1 ${isStudio ? 'bg-[#967abc]/20 border border-[#967abc]/30' : 'bg-purple-900/30 border border-purple-500/30'}`}>
+                    <span key={tag} className={`px-2.5 py-1 rounded-full text-sm flex items-center gap-1 bg-[#967abc]/20 border border-[#967abc]/30`}>
                       {tag}
                       <button onClick={() => setEditingTags(prev => prev.filter(t => t !== tag))} className="hover:text-red-400 ml-1"><X className="w-3 h-3" /></button>
                     </span>
@@ -4306,9 +4347,9 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               </div>
             </div>
 
-            <div className={`flex justify-end gap-2 p-5 border-t ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
-              <button onClick={() => setShowEditModal(false)} className={`px-4 py-2 rounded-xl ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}>Cancel</button>
-              <button onClick={saveMetadata} className={`px-6 py-2 rounded-xl font-bold ${isStudio ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-purple-600 hover:bg-purple-700'}`}>Save Changes</button>
+            <div className={`flex justify-end gap-2 p-5 border-t border-[#1d1b2d]}`}>
+              <button onClick={() => setShowEditModal(false)} className={`px-4 py-2 rounded-xl bg-[#1d1b2d] hover:bg-[#4c4b5a]`}>Cancel</button>
+              <button onClick={saveMetadata} className={`px-6 py-2 rounded-xl font-bold bg-[#967abc] hover:bg-[#967abc]/80`}>Save Changes</button>
             </div>
           </div>
         </div>
@@ -4318,15 +4359,15 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {showTrashModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setShowTrashModal(false)} />
-          <div className={`relative z-10 w-full max-w-4xl max-h-[90vh] rounded-xl flex flex-col ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
-            <div className={`flex items-center justify-between p-5 border-b flex-shrink-0 ${isStudio ? 'border-[#1d1b2d]' : 'border-gray-700'}`}>
+          <div className={`relative z-10 w-full max-w-4xl max-h-[90vh] rounded-xl flex flex-col bg-[#161621] border border-[#1d1b2d]`}>
+            <div className={`flex items-center justify-between p-5 border-b flex-shrink-0 border-[#1d1b2d]`}>
               <h2 className="text-lg font-semibold flex items-center gap-2">
-                <Trash2 className={`w-5 h-5 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`} />
+                <Trash2 className={`w-5 h-5 text-[#9e98aa]`} />
                 Trash
               </h2>
               <div className="flex gap-2">
                 <button onClick={handleEmptyTrash} disabled={trashedItems.length === 0} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-xl disabled:opacity-50 text-sm font-medium">Empty Trash</button>
-                <button onClick={() => setShowTrashModal(false)} className={`${isStudio ? 'text-[#9e98aa] hover:text-white' : 'text-gray-400 hover:text-gray-200'}`}><X className="w-5 h-5" /></button>
+                <button onClick={() => setShowTrashModal(false)} className={`text-[#9e98aa] hover:text-white`}><X className="w-5 h-5" /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-5">
@@ -4335,7 +4376,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   {trashedItems.map((item) => {
                     const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
                     return (
-                      <div key={item.item_id} className={`relative group rounded-lg overflow-hidden border ${isStudio ? 'bg-[#1c1b26] border-[#1d1b2d]' : 'bg-gray-700 border-gray-600'}`}>
+                      <div key={item.item_id} className={`relative group rounded-lg overflow-hidden border bg-[#1c1b26] border-[#1d1b2d]`}>
                         {isVid ? (
                           <video src={item.url} className="w-full h-auto object-cover opacity-60" />
                         ) : (
@@ -4344,7 +4385,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         <div className="absolute inset-0 flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 bg-black/50 transition-opacity">
                           <button onClick={() => handleRestore(item.item_id)} className="p-2 bg-green-600 hover:bg-green-700 rounded-full text-white" title="Restore"><Undo className="w-5 h-5" /></button>
                         </div>
-                        <div className={`absolute bottom-0 left-0 right-0 p-1.5 text-xs text-center ${isStudio ? 'bg-[#0f0f17]/80 text-[#9e98aa]' : 'bg-black/60 text-gray-300'}`}>
+                        <div className={`absolute bottom-0 left-0 right-0 p-1.5 text-xs text-center bg-[#0f0f17]/80 text-[#9e98aa]`}>
                           {item.source} #{item.source_id}
                         </div>
                       </div>
@@ -4352,7 +4393,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   })}
                 </Masonry>
               ) : (
-                <div className={`text-center py-20 ${isStudio ? 'text-[#4c4b5a]' : 'text-gray-500'}`}>
+                <div className={`text-center py-20 text-[#4c4b5a]`}>
                   <Trash2 className="w-16 h-16 mx-auto mb-4 opacity-20" />
                   <p>Trash is empty</p>
                 </div>
@@ -4366,7 +4407,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       <div className="flex items-center justify-between px-4 py-2 text-xs border-t flex-shrink-0 bg-[#161621] border-[#1d1b2d] text-[#4c4b5a]">
         <span>TailBurrow v{APP_VERSION}</span>
         <span>{itemCount} loaded • {totalDatabaseItems} total</span>
-        <button onClick={loadTrash} className={`flex items-center gap-1.5 transition-colors ${isStudio ? 'hover:text-[#967abc]' : 'hover:text-white'}`}>
+        <button onClick={loadTrash} className={`flex items-center gap-1.5 transition-colors hover:text-[#967abc]`}>
           <Trash2 className="w-3.5 h-3.5" />
           Trash ({trashCount})
         </button>
@@ -4379,7 +4420,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         autoscrollSpeed={autoscrollSpeed}
         setAutoscrollSpeed={setAutoscrollSpeed}
         hidden={shouldHideAutoscroll}
-        isStudio={isStudio}
       />
       {/* Bulk Tag Modal */}
       {showBulkTagModal && (
@@ -4648,13 +4688,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {confirmModal && (
         <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setConfirmModal(null)} />
-          <div className={`relative z-10 w-full max-w-md rounded-xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-150 ${isStudio ? 'bg-[#161621] border border-[#1d1b2d]' : 'bg-gray-800 border border-gray-700'}`}>
+          <div className={`relative z-10 w-full max-w-md rounded-xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-150 bg-[#161621] border border-[#1d1b2d]`}>
             <h3 className="text-lg font-bold mb-2">{confirmModal.title}</h3>
-            <p className={`text-sm mb-6 ${isStudio ? 'text-[#9e98aa]' : 'text-gray-400'}`}>{confirmModal.message}</p>
+            <p className={`text-sm mb-6 text-[#9e98aa]}`}>{confirmModal.message}</p>
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setConfirmModal(null)}
-                className={`px-4 py-2 rounded-xl transition-colors ${isStudio ? 'bg-[#1d1b2d] hover:bg-[#4c4b5a]' : 'bg-gray-700 hover:bg-gray-600'}`}
+                className={`px-4 py-2 rounded-xl transition-colors bg-[#1d1b2d] hover:bg-[#4c4b5a]`}
               >
                 {confirmModal.cancelLabel || 'Cancel'}
               </button>
@@ -4670,5 +4710,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       )}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
+  );
+}
+
+export default function FavoritesViewer() {
+  return (
+    <ErrorBoundary>
+      <FavoritesViewerInner />
+    </ErrorBoundary>
   );
 }
