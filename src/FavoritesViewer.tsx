@@ -184,6 +184,14 @@ type DeletedPostInfo = {
 
 // ─── HELPERS ─────────────────────────────────────────────────
 function mapItemDto(r: ItemDto): LibraryItem {
+  const tagsGeneral = r.tags_general || [];
+  const tagsArtist = r.tags_artist || [];
+  const tagsCopyright = r.tags_copyright || [];
+  const tagsCharacter = r.tags_character || [];
+  const tagsSpecies = r.tags_species || [];
+  const tagsMeta = r.tags_meta || [];
+  const tagsLore = r.tags_lore || [];
+
   return {
     item_id: r.item_id,
     source: r.source,
@@ -192,20 +200,28 @@ function mapItemDto(r: ItemDto): LibraryItem {
     url: convertFileSrc(r.file_abs),
     file_rel: r.file_rel,
     ext: r.ext,
-    tags: r.tags || [],
-    artist: r.artists || [],
+    tags: [
+      ...tagsGeneral,
+      ...tagsArtist,
+      ...tagsCopyright,
+      ...tagsCharacter,
+      ...tagsSpecies,
+      ...tagsMeta,
+      ...tagsLore,
+    ],
+    artist: tagsArtist,
     sources: r.sources || [],
     rating: r.rating,
     fav_count: r.fav_count,
     score: { total: r.score_total ?? 0 },
     timestamp: r.timestamp,
-    tags_general: r.tags_general || [],
-    tags_artist: r.tags_artist || [],
-    tags_copyright: r.tags_copyright || [],
-    tags_character: r.tags_character || [],
-    tags_species: r.tags_species || [],
-    tags_meta: r.tags_meta || [],
-    tags_lore: r.tags_lore || [],
+    tags_general: tagsGeneral,
+    tags_artist: tagsArtist,
+    tags_copyright: tagsCopyright,
+    tags_character: tagsCharacter,
+    tags_species: tagsSpecies,
+    tags_meta: tagsMeta,
+    tags_lore: tagsLore,
   };
 }
 
@@ -755,15 +771,24 @@ const ComicPage = ({ post, comicScale, isStudio }: {
 
 // ─── RESIZE HANDLE ───────────────────────────────────────────
 const ResizeHandle = ({ onDrag }: { onDrag: (clientX: number) => void }) => {
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => { cleanupRef.current?.(); };
+  }, []);
+
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     const onMouseMove = (ev: MouseEvent) => onDrag(ev.clientX);
-    const onMouseUp = () => {
+    const cleanup = () => {
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      cleanupRef.current = null;
     };
+    const onMouseUp = () => cleanup();
+    cleanupRef.current = cleanup;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMouseMove);
@@ -773,7 +798,7 @@ const ResizeHandle = ({ onDrag }: { onDrag: (clientX: number) => void }) => {
   return (
     <div
       onMouseDown={handleMouseDown}
-        className="w-1.5 flex-shrink-0 cursor-col-resize bg-[#1d1b2d] hover:bg-[#967abc] active:bg-[#967abc]/80 transition-colors"
+      className="w-1.5 flex-shrink-0 cursor-col-resize bg-[#1d1b2d] hover:bg-[#967abc] active:bg-[#967abc]/80 transition-colors"
     />
   );
 };
@@ -872,6 +897,7 @@ export default function FavoritesViewer() {
   } | null>(null);
   const feedPillRefs = useRef<Map<number, HTMLElement>>(new Map());
   const feedDragStartRef = useRef<{ x: number; y: number; id: number; index: number } | null>(null);
+  const feedDragCleanupRef = useRef<(() => void) | null>(null);
   const feedDragRef = useRef(feedDrag);
   useEffect(() => { feedDragRef.current = feedDrag; }, [feedDrag]);
   const [feedSearchInput, setFeedSearchInput] = useState('');
@@ -1024,13 +1050,29 @@ export default function FavoritesViewer() {
   const isVideo = ext === "mp4" || ext === "webm";
   const pendingTagSearchRef = useRef(false);
 
-  useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
+  // Refs for loadData to avoid recreating it on every filter change
+  const searchTagsRef = useRef(searchTags);
+  const selectedTagsRef = useRef(selectedTags);
+  const filterSourceRef = useRef(filterSource);
+  const sortOrderRef = useRef(sortOrder);
+  const safeModeRef = useRef(safeMode);
+  const itemsPerPageRef = useRef(itemsPerPage);
 
-  useEffect(() => {
-    hasMoreRef.current = hasMoreItems;
-  }, [hasMoreItems]);
+  useEffect(() => { searchTagsRef.current = searchTags; }, [searchTags]);
+  useEffect(() => { selectedTagsRef.current = selectedTags; }, [selectedTags]);
+  useEffect(() => { filterSourceRef.current = filterSource; }, [filterSource]);
+  useEffect(() => { sortOrderRef.current = sortOrder; }, [sortOrder]);
+  useEffect(() => { safeModeRef.current = safeMode; }, [safeMode]);
+  useEffect(() => { itemsPerPageRef.current = itemsPerPage; }, [itemsPerPage]);
+
+  useEffect(() => { itemsRef.current = items; }, [items]);
+  useEffect(() => { hasMoreRef.current = hasMoreItems; }, [hasMoreItems]);
+  useEffect(() => { searchTagsRef.current = searchTags; }, [searchTags]);
+  useEffect(() => { selectedTagsRef.current = selectedTags; }, [selectedTags]);
+  useEffect(() => { filterSourceRef.current = filterSource; }, [filterSource]);
+  useEffect(() => { sortOrderRef.current = sortOrder; }, [sortOrder]);
+  useEffect(() => { safeModeRef.current = safeMode; }, [safeMode]);
+  useEffect(() => { itemsPerPageRef.current = itemsPerPage; }, [itemsPerPage]);
 
   useEffect(() => {
     loadingFeedsRef.current = loadingFeeds;
@@ -1048,7 +1090,7 @@ export default function FavoritesViewer() {
   // --- CORE DATA ---
   const loadData = useCallback(async (append: boolean, overrides?: { pageSize?: number }) => {
     const requestId = ++loadRequestIdRef.current;
-    const limit = overrides?.pageSize ?? itemsPerPage;
+    const limit = overrides?.pageSize ?? itemsPerPageRef.current;
 
     if (!append) {
       setIsSearching(true);
@@ -1056,16 +1098,16 @@ export default function FavoritesViewer() {
 
     try {
       const offset = append ? itemsRef.current.length : 0;
-      let combinedSearch = [searchTags, ...selectedTags].join(" ").trim();
-      if (safeMode && !combinedSearch.includes("rating:")) {
+      let combinedSearch = [searchTagsRef.current, ...selectedTagsRef.current].join(" ").trim();
+      if (safeModeRef.current && !combinedSearch.includes("rating:")) {
         combinedSearch = combinedSearch ? `${combinedSearch} rating:s` : "rating:s";
       }
       const rows = await invoke<ItemDto[]>("list_items", {
         limit,
         offset,
         search: combinedSearch,
-        source: filterSource,
-        order: sortOrder,
+        source: filterSourceRef.current,
+        order: sortOrderRef.current,
       });
 
       if (requestId !== loadRequestIdRef.current) return;
@@ -1100,7 +1142,7 @@ export default function FavoritesViewer() {
         setIsSearching(false);
       }
     }
-  }, [itemsPerPage, searchTags, selectedTags, filterSource, sortOrder, toast, safeMode]);
+  }, [toast]);
 
   const loadMoreItems = useCallback(async () => {
     if (loadingRef.current || !hasMoreRef.current) return;
@@ -2065,6 +2107,7 @@ if (loadingFeedsRef.current[feedId]) return;
     return () => {
       if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
       if (faSyncIntervalRef.current) clearInterval(faSyncIntervalRef.current);
+      feedDragCleanupRef.current?.();
     };
   }, []);
 
@@ -3037,6 +3080,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                           const onUp = () => {
                             document.removeEventListener('pointermove', onMove);
                             document.removeEventListener('pointerup', onUp);
+                            feedDragCleanupRef.current = null;
 
                             const start = feedDragStartRef.current;
                             const drag = feedDragRef.current;
@@ -3070,6 +3114,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                             setFeedDrag(null);
                           };
 
+                          feedDragCleanupRef.current = () => {
+                            document.removeEventListener('pointermove', onMove);
+                            document.removeEventListener('pointerup', onUp);
+                          };
                           document.addEventListener('pointermove', onMove);
                           document.addEventListener('pointerup', onUp);
                         }}
