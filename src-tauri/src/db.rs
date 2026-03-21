@@ -74,8 +74,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
       FOREIGN KEY (source_row_id) REFERENCES sources(source_row_id) ON DELETE CASCADE
     );
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS fts_items
-    USING fts5(item_id UNINDEXED, text);
+    -- fts_items: reserved for future full-text search
 
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,

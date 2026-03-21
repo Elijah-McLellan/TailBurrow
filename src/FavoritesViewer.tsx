@@ -15,6 +15,10 @@ import Masonry from "react-masonry-css";
 const APP_VERSION = "0.3.1";
 const TOAST_DURATION_MS = 4000;
 
+// Video extensions
+const VIDEO_EXTENSIONS = ['mp4', 'webm'];
+const ANIMATED_EXTENSIONS = ['mp4', 'webm', 'gif'];
+
 type Toast = {
   id: number;
   message: string;
@@ -70,8 +74,6 @@ type ItemDto = {
   file_abs: string;
   file_rel: string;
   ext?: string | null;
-  tags: string[];
-  artists: string[];
   sources: string[];
   rating?: string | null;
   fav_count?: number | null;
@@ -262,6 +264,14 @@ function getSocialMediaName(url: string): string {
   }
 }
 
+const ARTIST_DENY_LIST = ['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'];
+
+function getDisplayArtists(item: { artist?: string[]; tags_artist?: string[] }): string {
+  const artists = (item.artist && item.artist.length > 0) ? item.artist : (item.tags_artist || []);
+  const filtered = artists.filter(a => !ARTIST_DENY_LIST.includes(a));
+  return filtered.length > 0 ? filtered.join(", ") : "Unknown";
+}
+
 function parsePositiveInt(s: string): { ok: true; value: number | null } | { ok: false } {
   const trimmed = s.trim();
   if (trimmed === "") return { ok: true, value: null };
@@ -349,7 +359,7 @@ const Thumbnail = ({ item, className, onLoad }: { item: LibraryItem; className?:
     setSrc("");
     setLoaded(false);
 
-    if (["mp4", "webm", "gif"].includes(ext)) {
+    if (ANIMATED_EXTENSIONS.includes(ext)) {
       setSrc(fallbackUrl);
       return;
     }
@@ -420,7 +430,7 @@ const GridItem = React.memo(({ item, index, onSelect, isSelected, isMultiSelecte
   isMultiSelected?: boolean;
   onMultiClick?: (index: number, e: React.MouseEvent) => void;
 }) => {
-  const isVid = ["mp4", "webm"].includes((item.ext || "").toLowerCase());
+  const isVid = VIDEO_EXTENSIONS.includes((item.ext || "").toLowerCase());
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -533,15 +543,7 @@ const GridItem = React.memo(({ item, index, onSelect, isSelected, isMultiSelecte
             {item.source === 'e621' ? 'E6' : item.source === 'local' ? 'LC' : 'FA'}
           </span>
           <span className="text-white text-sm font-medium truncate">
-            {(() => {
-              const artists = (item.artist && item.artist.length > 0)
-                ? item.artist
-                : item.tags_artist;
-              const filtered = (artists || []).filter(a =>
-                !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a)
-              );
-              return filtered.length > 0 ? filtered.join(", ") : "Unknown";
-            })()}
+            {getDisplayArtists(item)}
           </span>
         </div>
         <div className="flex justify-between items-center text-xs text-gray-300 border-t border-white/20 pt-1">
@@ -565,7 +567,7 @@ const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, o
 }) => {
   const isRemoteFav = post.is_favorited;
   const imageUrl = post.sample.url || post.file.url || post.preview.url;
-  const artists = post.tags.artist.filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
+  const artists = post.tags.artist.filter(a => !ARTIST_DENY_LIST.includes(a));
   const w = post.sample.width || post.file.width || 1;
   const h = post.sample.height || post.file.height || 1;
 
@@ -664,6 +666,29 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
         <span className="text-[10px] font-mono w-6 text-right text-[#9e98aa]">{autoscrollSpeed}x</span>
       </div>
     </div>
+  );
+};
+
+const PoolCover = ({ pool }: { pool: PoolInfo }) => {
+  const [error, setError] = useState(false);
+
+  if (!pool.cover_url || error) {
+    return (
+      <div className="w-full aspect-[3/4] flex items-center justify-center bg-[#1d1b2d]">
+        <BookOpen className="w-12 h-12 opacity-30" />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={pool.cover_url}
+      alt={pool.name}
+      className="w-full h-auto object-cover"
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setError(true)}
+    />
   );
 };
 
@@ -1096,7 +1121,7 @@ function FavoritesViewerInner() {
   }, [pools, comicSearchInput]);
   const itemCount = items.length;
   const ext = (currentItem?.ext || "").toLowerCase();
-  const isVideo = ext === "mp4" || ext === "webm";
+  const isVideo = VIDEO_EXTENSIONS.includes(ext);
   const pendingTagSearchRef = useRef(false);
 
   // Refs for loadData to avoid recreating it on every filter change
@@ -2998,11 +3023,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                           {currentItem.source === 'e621' ? 'E6' : currentItem.source === 'local' ? 'LC' : 'FA'}
                         </span>
                         <span className="text-sm font-medium truncate text-white">
-                          {(() => {
-                            const artists = (currentItem.artist && currentItem.artist.length > 0) ? currentItem.artist : currentItem.tags_artist;
-                            const filtered = (artists || []).filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
-                            return filtered.length > 0 ? filtered.join(", ") : "Unknown";
-                          })()}
+                          {getDisplayArtists(currentItem)}
                         </span>
                       </div>
                       <div className="flex gap-3 text-xs text-[#9e98aa]">
@@ -3399,10 +3420,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider bg-blue-600">E6</span>
                         <span className="text-sm font-medium truncate text-white">
-                          {(() => {
-                            const artists = selectedFeedPost.tags.artist.filter(a => !['conditional_dnp', 'sound_warning', 'unknown_artist', 'epilepsy_warning'].includes(a));
-                            return artists.length > 0 ? artists.join(", ") : "Unknown";
-                          })()}
+                          {selectedFeedPost.tags.artist.filter(a => !ARTIST_DENY_LIST.includes(a)).join(", ") || "Unknown"}
                         </span>
                       </div>
                       <div className="flex gap-3 text-xs text-[#9e98aa]">
@@ -3652,29 +3670,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       onClick={() => openPool(pool)}
                       className={`group cursor-pointer rounded-lg overflow-hidden border transition-all bg-[#161621] border-[#1d1b2d] hover:border-[#967abc]`}
                     >
-                      {pool.cover_url ? (
-                        <img
-                          src={pool.cover_url}
-                          alt={pool.name}
-                          className="w-full h-auto object-cover"
-                          loading="lazy"
-                          referrerPolicy="no-referrer"
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.display = 'none';
-                            if (e.currentTarget.nextElementSibling) return;
-                            const fallback = document.createElement('div');
-                            fallback.className = 'w-full flex items-center justify-center';
-                            fallback.style.aspectRatio = '3/4';
-                            fallback.style.backgroundColor = '#1d1b2d';
-                            fallback.innerHTML = '<svg style="width:3rem;height:3rem;opacity:0.3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>';
-                            e.currentTarget.parentElement?.appendChild(fallback);
-                          }}
-                        />
-                      ) : (
-                        <div className={`w-full aspect-[3/4] flex items-center justify-center bg-[#1d1b2d]`}>
-                          <BookOpen className="w-12 h-12 opacity-30" />
-                        </div>
-                      )}
+                      <PoolCover pool={pool} />
                       <div className={`p-3 bg-[#161621]`}>
                         <h3 className="font-medium text-sm truncate">{pool.name}</h3>
                         <p className={`text-xs mt-1 text-[#4c4b5a]`}>{pool.post_count} pages</p>
