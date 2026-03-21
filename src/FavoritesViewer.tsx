@@ -621,19 +621,20 @@ const FeedPostItem = React.memo(({ post, feedId, downloaded, busy, onFavorite, o
   );
 });
 
-const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, setAutoscrollSpeed, hidden }: {
+const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, setAutoscrollSpeed, hidden, rightOffset }: {
   active: boolean; autoscroll: boolean; setAutoscroll: (v: boolean) => void;
-  autoscrollSpeed: number; setAutoscrollSpeed: (v: number) => void; hidden: boolean;
+  autoscrollSpeed: number; setAutoscrollSpeed: (v: number) => void; hidden: boolean; rightOffset?: number;
 }) => {
   if (!active || hidden) return null;
+
+  const rightPx = (rightOffset || 0) + 16;
 
   if (!autoscroll) {
     return (
       <button
         onClick={() => setAutoscroll(true)}
-        className={`fixed bottom-12 right-4 px-3 py-2 rounded-xl shadow-lg border transition-all z-40 flex items-center gap-2 text-xs font-medium ${
-          'bg-[#161621] hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white border-[#1d1b2d]'
-        }`}
+        className="fixed bottom-12 px-3 py-2 rounded-xl shadow-lg border transition-all z-40 flex items-center gap-2 text-xs font-medium bg-[#161621] hover:bg-[#1d1b2d] text-[#9e98aa] hover:text-white border-[#1d1b2d]"
+        style={{ right: rightPx }}
         title="Start Autoscroll"
       >
         <ChevronsDown className="w-4 h-4" />
@@ -643,13 +644,14 @@ const AutoscrollWidget = ({ active, autoscroll, setAutoscroll, autoscrollSpeed, 
   }
 
   return (
-    <div className={`fixed bottom-12 right-4 backdrop-blur border rounded-xl shadow-xl z-40 animate-in fade-in slide-in-from-bottom-4 ${
-      'bg-[#161621]/95 border-[#1d1b2d]'
-    }`}>
+    <div
+      className="fixed bottom-12 backdrop-blur border rounded-xl shadow-xl z-40 animate-in fade-in slide-in-from-bottom-4 bg-[#161621]/95 border-[#1d1b2d]"
+      style={{ right: rightPx }}
+    >
       <div className="flex items-center gap-2 p-2">
         <button
           onClick={() => setAutoscroll(false)}
-          className={`p-1.5 rounded-lg transition-colors hover:bg-[#1d1b2d] text-red-400`}
+          className="p-1.5 rounded-lg transition-colors hover:bg-[#1d1b2d] text-red-400"
           title="Stop"
         >
           <Pause className="w-4 h-4" />
@@ -985,6 +987,12 @@ function FavoritesViewerInner() {
   );
   const feedsContainerRef = useRef<HTMLDivElement>(null);
   const [feedDetailOpen, setFeedDetailOpen] = useState(false);
+  const [feedSlideshow, setFeedSlideshow] = useState(false);
+  const [feedViewerOverlay, setFeedViewerOverlay] = useState(false);
+  const [feedImageLoading, setFeedImageLoading] = useState(true);
+  const [feedFadeIn, setFeedFadeIn] = useState(true);
+  const [showSpeedSlider, setShowSpeedSlider] = useState(false);
+  const speedSliderRef = useRef<HTMLDivElement>(null);
   const [libraryDetailOpen, setLibraryDetailOpen] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(new Set());
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
@@ -1412,6 +1420,11 @@ if (loadingFeedsRef.current[feedId]) return;
     if (selectedFeedId && feedPosts[selectedFeedId]) return feedPosts[selectedFeedId];
     return [];
   }, [feedSearchInput, feedSearchResults, selectedFeedId, feedPosts]);
+
+  useEffect(() => {
+    setFeedImageLoading(true);
+    setFeedFadeIn(true);
+  }, [selectedFeedPost?.id]);
 
   const goToNextFeedPost = useCallback(() => {
     if (currentFeedPosts.length === 0) return;
@@ -2166,6 +2179,28 @@ if (loadingFeedsRef.current[feedId]) return;
           openEditModal();
         }
       }
+
+      if (activeTab === "feeds" && feedDetailOpen && selectedFeedPost) {
+        if (key === "a" || e.key === "ArrowLeft") { e.preventDefault(); goToPrevFeedPost(); }
+        else if (key === "d" || e.key === "ArrowRight") { e.preventDefault(); goToNextFeedPost(); }
+        else if (key === "f") {
+          e.preventDefault();
+          (async () => {
+            try {
+              if (!document.fullscreenElement) {
+                await document.documentElement.requestFullscreen();
+                setFeedViewerOverlay(true);
+              } else {
+                await document.exitFullscreen();
+                setFeedViewerOverlay(false);
+              }
+            } catch (e) {
+              console.warn("Fullscreen request failed:", e);
+            }
+          })();
+        }
+        else if (key === "m") { e.preventDefault(); setAutoMuteVideos(v => !v); }
+      }
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -2173,7 +2208,8 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [activeTab, viewerOverlay, pokeHud, goToPrev, goToNext, openEditModal,
     showSettings, showEditModal, showTrashModal, showAddFeedModal, showImportModal,
     selectedPool, closePool, confirmModal, libraryDetailOpen,
-    selectedItemIds, deselectAll, selectAll, showBulkTagModal]);
+    selectedItemIds, deselectAll, selectAll, showBulkTagModal,
+    feedDetailOpen, selectedFeedPost, goToPrevFeedPost, goToNextFeedPost]);
 
   // HUD management
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
@@ -2203,10 +2239,15 @@ if (loadingFeedsRef.current[feedId]) return;
 
   // Fullscreen exit handler
   useEffect(() => {
-    const handler = () => { if (!document.fullscreenElement && viewerOverlay) setViewerOverlay(false); };
+    const handler = () => {
+      if (!document.fullscreenElement) {
+        if (viewerOverlay) setViewerOverlay(false);
+        if (feedViewerOverlay) setFeedViewerOverlay(false);
+      }
+    };
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
-  }, [viewerOverlay]);
+  }, [viewerOverlay, feedViewerOverlay]);
 
   // Persist preferences
   useEffect(() => { try { localStorage.setItem('preferred_sort_order', sortOrder); } catch { /* ignore */ } }, [sortOrder]);
@@ -2220,6 +2261,26 @@ if (loadingFeedsRef.current[feedId]) return;
       document.body.style.backgroundColor = '';
     };
   }, []);
+
+  // Feed slideshow
+  useEffect(() => {
+    if (!feedSlideshow || currentFeedPosts.length === 0 || !selectedFeedPost) return;
+    const currentExt = (selectedFeedPost.file.ext || '').toLowerCase();
+    const isFeedVideo = VIDEO_EXTENSIONS.includes(currentExt);
+    if (waitForVideoEnd && isFeedVideo) return;
+
+    const timeout = setTimeout(() => {
+      setFeedFadeIn(false);
+      setTimeout(() => {
+        const nextIndex = (feedPostIndex + 1) % currentFeedPosts.length;
+        setFeedPostIndex(nextIndex);
+        setSelectedFeedPost(currentFeedPosts[nextIndex]);
+        requestAnimationFrame(() => setFeedFadeIn(true));
+      }, FADE_DURATION_MS);
+    }, slideshowSpeed);
+
+    return () => clearTimeout(timeout);
+  }, [feedSlideshow, slideshowSpeed, waitForVideoEnd, selectedFeedPost, feedPostIndex, currentFeedPosts]);
 
   // Slideshow: timer resets on each slide change via currentIndex dep.
   // isVideo dep changes with currentIndex since it's derived from currentItem.
@@ -2240,6 +2301,17 @@ if (loadingFeedsRef.current[feedId]) return;
 
     return () => clearTimeout(timeout);
   }, [isSlideshow, slideshowSpeed, waitForVideoEnd, isVideo, currentIndex]);
+
+    useEffect(() => {
+    if (!showSpeedSlider) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (speedSliderRef.current && !speedSliderRef.current.contains(e.target as Node)) {
+        setShowSpeedSlider(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSpeedSlider]);
 
   useEffect(() => {
     setImageLoading(true);
@@ -2737,7 +2809,96 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           </div>
         </div>
       </div>
-            {/* Fullscreen Overlay */}
+      {/* Feed Fullscreen Overlay */}
+      {feedViewerOverlay && selectedFeedPost && (
+        <div
+          className="fixed inset-0 z-50 bg-black"
+          onMouseMove={pokeHud}
+          onMouseDown={pokeHud}
+          onWheel={pokeHud}
+          onTouchStart={pokeHud}
+        >
+          <div className="relative w-full h-full">
+            <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={goToPrevFeedPost} />
+            <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={goToNextFeedPost} />
+
+            <div className="w-full h-full flex items-center justify-center">
+              {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
+                <video
+                  key={selectedFeedPost.id}
+                  src={selectedFeedPost.file.url || selectedFeedPost.sample.url || ''}
+                  controls
+                  autoPlay
+                  loop={!waitForVideoEnd || !feedSlideshow}
+                  muted={globalMute || autoMuteVideos}
+                  className={`w-full h-full object-contain transition-opacity duration-300 ${feedFadeIn ? "opacity-100" : "opacity-0"}`}
+                  style={{ pointerEvents: 'none' }}
+                  onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setFeedImageLoading(false); }}
+                  onError={() => setFeedImageLoading(false)}
+                  onEnded={() => { if (waitForVideoEnd && feedSlideshow) goToNextFeedPost(); }}
+                />
+              ) : (
+                <img
+                  key={selectedFeedPost.id}
+                  src={selectedFeedPost.sample.url || selectedFeedPost.file.url || ''}
+                  alt=""
+                  className={`w-full h-full object-contain transition-opacity duration-200 ${feedFadeIn ? "opacity-100" : "opacity-0"}`}
+                  onLoad={() => setFeedImageLoading(false)}
+                  referrerPolicy="no-referrer"
+                />
+              )}
+            </div>
+
+            <div
+              className={`absolute bottom-6 left-1/2 -translate-x-1/2 transition-all duration-300 ease-out ${showHud ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"}`}
+              onMouseEnter={() => { hudHoverRef.current = true; setShowHud(true); }}
+              onMouseLeave={() => { hudHoverRef.current = false; scheduleHudHide(); }}
+            >
+              <div className="relative z-20 px-6 py-4 bg-gray-900/80 backdrop-blur-md rounded-2xl border border-gray-700/50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-center gap-1.5">
+                  <button onClick={goToPrevFeedPost} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronLeft className="w-4 h-4" /></button>
+                  <button onClick={() => setFeedSlideshow(!feedSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded">{feedSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
+                    <div className="relative" ref={speedSliderRef}>
+                      <button
+                        onClick={() => setShowSpeedSlider(prev => !prev)}
+                        className="p-1.5 rounded bg-[#1d1b2d] hover:bg-[#4c4b5a] text-xs font-mono text-[#9e98aa] hover:text-white transition-colors"
+                      >
+                        {slideshowSpeed / 1000}s
+                      </button>
+                      {showSpeedSlider && (
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-900/95 backdrop-blur border border-gray-700/50 shadow-xl animate-in fade-in zoom-in-95 duration-100">
+                          <input
+                            type="range"
+                            min={1}
+                            max={15}
+                            step={1}
+                            value={slideshowSpeed / 1000}
+                            onChange={(e) => setSlideshowSpeed(Number(e.target.value) * 1000)}
+                            className="w-28 h-1.5 cursor-pointer accent-[#967abc]"
+                          />
+                          <span className="text-[10px] font-mono text-[#9e98aa] w-6 text-right">{slideshowSpeed / 1000}s</span>
+                        </div>
+                      )}
+                    </div>
+                  <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
+                  <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
+                  <button onClick={async () => { await document.exitFullscreen(); setFeedViewerOverlay(false); }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><Maximize className="w-4 h-4" /></button>
+                  <button
+                    onClick={() => ensureFavorite(selectedFeedId ?? -1, selectedFeedPost)}
+                    disabled={!!feedActionBusy[selectedFeedPost.id]}
+                    className={`p-1.5 rounded ${selectedFeedPost.is_favorited ? 'bg-yellow-500 text-yellow-900' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}
+                  >
+                    {feedActionBusy[selectedFeedPost.id] ? <Loader2 className="w-4 h-4 animate-spin" /> : <Star className={`w-4 h-4 ${selectedFeedPost.is_favorited ? 'fill-current' : ''}`} />}
+                  </button>
+                  <button onClick={goToNextFeedPost} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronRight className="w-4 h-4" /></button>
+                  <span className="text-xs text-[#4c4b5a] ml-1">{feedPostIndex + 1}/{currentFeedPosts.length}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Fullscreen Overlay */}
       {viewerOverlay && currentItem && (
         <div
           className="fixed inset-0 z-50 bg-black"
@@ -2792,9 +2953,16 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                 <div className="flex items-center justify-center gap-1.5">
                   <button onClick={() => goToPrev(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><ChevronLeft className="w-4 h-4" /></button>
                   <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded">{isSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
-                  <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-2 py-1.5 bg-[#1d1b2d] border border-[#4c4b5a] rounded-xl text-sm">
-                    <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
-                  </select>
+                  <input
+                    type="range"
+                    min={1}
+                    max={15}
+                    step={1}
+                    value={slideshowSpeed / 1000}
+                    onChange={(e) => setSlideshowSpeed(Number(e.target.value) * 1000)}
+                    className="w-24 h-1.5 cursor-pointer accent-[#967abc]"
+                  />
+                  <span className="text-xs text-[#9e98aa] font-mono w-6">{slideshowSpeed / 1000}s</span>
                   <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
                   <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
                   <button onClick={async () => { await document.exitFullscreen(); setViewerOverlay(false); }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><Maximize className="w-4 h-4" /></button>
@@ -2995,9 +3163,28 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   <div className="sticky bottom-0 z-10 p-3 border-t border-[#1d1b2d] bg-[#161621] flex items-center justify-center gap-1.5">
                     <button onClick={() => goToPrev(true)} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><ChevronLeft className="w-4 h-4" /></button>
                     <button onClick={() => setIsSlideshow(!isSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded transition-colors">{isSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
-                    <select value={slideshowSpeed} onChange={(e) => setSlideshowSpeed(Number(e.target.value))} className="px-2 py-1.5 bg-[#1d1b2d] border border-[#4c4b5a] rounded-xl text-xs">
-                      <option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
-                    </select>
+                    <div className="relative" ref={speedSliderRef}>
+                      <button
+                        onClick={() => setShowSpeedSlider(prev => !prev)}
+                        className="p-1.5 rounded bg-[#1d1b2d] hover:bg-[#4c4b5a] text-xs font-mono text-[#9e98aa] hover:text-white transition-colors"
+                      >
+                        {slideshowSpeed / 1000}s
+                      </button>
+                      {showSpeedSlider && (
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-900/95 backdrop-blur border border-gray-700/50 shadow-xl animate-in fade-in zoom-in-95 duration-100">
+                          <input
+                            type="range"
+                            min={1}
+                            max={15}
+                            step={1}
+                            value={slideshowSpeed / 1000}
+                            onChange={(e) => setSlideshowSpeed(Number(e.target.value) * 1000)}
+                            className="w-28 h-1.5 cursor-pointer accent-[#967abc]"
+                          />
+                          <span className="text-[10px] font-mono text-[#9e98aa] w-6 text-right">{slideshowSpeed / 1000}s</span>
+                        </div>
+                      )}
+                    </div>
                     <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded transition-colors ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
                     <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded transition-colors ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
                     <button onClick={async () => {
@@ -3361,22 +3548,30 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     >
                       <X className="w-4 h-4" />
                     </button>
+                    {feedImageLoading && (
+                      <div className="absolute inset-0 flex items-center justify-center z-10">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#967abc]" />
+                      </div>
+                    )}
                     {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
                       <video
                         key={selectedFeedPost.id}
                         src={selectedFeedPost.file.url || selectedFeedPost.sample.url || ''}
                         controls
                         autoPlay
-                        loop
+                        loop={!waitForVideoEnd || !feedSlideshow}
                         muted={globalMute || autoMuteVideos}
-                        className="max-w-full max-h-full object-contain"
-                        onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; }}
+                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${feedFadeIn ? "opacity-100" : "opacity-0"}`}
+                        onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setFeedImageLoading(false); }}
+                        onError={() => setFeedImageLoading(false)}
+                        onEnded={() => { if (waitForVideoEnd && feedSlideshow) goToNextFeedPost(); }}
                       />
                     ) : (
                       <img
                         src={selectedFeedPost.sample.url || selectedFeedPost.file.url || selectedFeedPost.preview.url || ''}
                         alt=""
-                        className="max-w-full max-h-full object-contain"
+                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${feedFadeIn ? "opacity-100" : "opacity-0"}`}
+                        onLoad={() => setFeedImageLoading(false)}
                         referrerPolicy="no-referrer"
                       />
                     )}
@@ -3385,7 +3580,31 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   {/* Controls - sticky */}
                   <div className="sticky bottom-0 z-10 p-3 border-t border-[#1d1b2d] bg-[#161621] flex items-center justify-center gap-1.5">
                     <button onClick={goToPrevFeedPost} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><ChevronLeft className="w-4 h-4" /></button>
+                    <button onClick={() => setFeedSlideshow(!feedSlideshow)} className="p-1.5 bg-[#967abc] hover:bg-[#967abc]/80 rounded transition-colors">{feedSlideshow ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}</button>
+                    <div className="relative" ref={speedSliderRef}>
+                      <button
+                        onClick={() => setShowSpeedSlider(prev => !prev)}
+                        className="p-1.5 rounded bg-[#1d1b2d] hover:bg-[#4c4b5a] text-xs font-mono text-[#9e98aa] hover:text-white transition-colors"
+                      >
+                        {slideshowSpeed / 1000}s
+                      </button>
+                      {showSpeedSlider && (
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-900/95 backdrop-blur border border-gray-700/50 shadow-xl animate-in fade-in zoom-in-95 duration-100">
+                          <input
+                            type="range"
+                            min={1}
+                            max={15}
+                            step={1}
+                            value={slideshowSpeed / 1000}
+                            onChange={(e) => setSlideshowSpeed(Number(e.target.value) * 1000)}
+                            className="w-28 h-1.5 cursor-pointer accent-[#967abc]"
+                          />
+                          <span className="text-[10px] font-mono text-[#9e98aa] w-6 text-right">{slideshowSpeed / 1000}s</span>
+                        </div>
+                      )}
+                    </div>
                     <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded transition-colors ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
+                    <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded transition-colors ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
                     <button
                       onClick={() => ensureFavorite(selectedFeedId ?? -1, selectedFeedPost)}
                       disabled={!!feedActionBusy[selectedFeedPost.id]}
@@ -3399,9 +3618,14 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       {selectedFeedPost.is_favorited ? 'Saved' : 'Save'}
                     </button>
                     <button
-                      onClick={() => openExternalUrl(`https://e621.net/posts/${selectedFeedPost.id}`)}
+                      onClick={async () => {
+                        try {
+                          if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); setFeedViewerOverlay(true); }
+                          else { await document.exitFullscreen(); setFeedViewerOverlay(false); }
+                        } catch (err) { console.warn("Fullscreen failed:", err); }
+                      }}
                       className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"
-                      title="Open on e621"
+                      title="Fullscreen"
                     >
                       <Maximize className="w-4 h-4" />
                     </button>
@@ -3687,7 +3911,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {showSettings && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/60" onClick={() => setShowSettings(false)} />
-          <div className="relative z-10 w-full max-w-3xl max-h-[85vh] rounded-xl flex overflow-hidden bg-[#161621] border border-[#1d1b2d]">
+          <div className="relative z-10 w-full max-w-3xl h-[85vh] rounded-xl flex overflow-hidden bg-[#161621] border border-[#1d1b2d]">
 
             {/* Sidebar */}
             <div className="w-44 flex-shrink-0 border-r border-[#1d1b2d] p-3 flex flex-col bg-[#131320]">
@@ -4416,6 +4640,11 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         autoscrollSpeed={autoscrollSpeed}
         setAutoscrollSpeed={setAutoscrollSpeed}
         hidden={shouldHideAutoscroll}
+        rightOffset={
+          (activeTab === 'viewer' && libraryDetailOpen && currentItem) ? libraryDetailWidth + 6 :
+          (activeTab === 'feeds' && feedDetailOpen && selectedFeedPost) ? feedDetailWidth + 6 :
+          0
+        }
       />
       {/* Bulk Tag Modal */}
       {showBulkTagModal && (
