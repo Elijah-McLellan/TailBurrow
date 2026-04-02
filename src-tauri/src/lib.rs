@@ -40,6 +40,22 @@ pub fn run() {
       }
       Ok(())
     })
+    .on_window_event(|app, event| {
+      if let tauri::WindowEvent::CloseRequested { .. } = event {
+        // Cancel e621 sync
+        if let Some(sync_state) = app.try_state::<Arc<Mutex<commands::SyncState>>>() {
+          if let Ok(mut st) = sync_state.lock() {
+            st.cancel_requested = true;
+          }
+        }
+        // Cancel FA sync
+        if let Some(fa_state) = app.try_state::<crate::fa::FAState>() {
+          *fa_state.should_cancel.lock().unwrap() = true;
+        }
+        // Give threads a moment to finish current operation
+        std::thread::sleep(std::time::Duration::from_millis(500));
+      }
+    })
     .invoke_handler(tauri::generate_handler![
       commands::add_e621_post,
       commands::get_config,
@@ -81,7 +97,6 @@ pub fn run() {
       commands::has_safe_pin,
       commands::verify_safe_pin,
       commands::clear_safe_pin,
-      commands::clear_safe_pin,
       commands::get_unscanned_e621_ids,
       commands::get_known_pool_ids,
       commands::check_posts_for_pools,
@@ -101,6 +116,8 @@ pub fn run() {
       commands::maintenance_fa_upgrade_status,
       commands::maintenance_get_deleted_results,
       commands::e621_unfavorite,
+      commands::search_tags,
+      commands::get_post_pools,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

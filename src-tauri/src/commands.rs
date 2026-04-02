@@ -120,6 +120,7 @@ pub struct SyncStatus {
   pub unavailable: u32,
 
   pub last_error: Option<String>,
+  pub started_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -155,8 +156,8 @@ pub struct MaintenanceProgress {
     pub current: u32,
     pub total: u32,
     pub message: String,
+    pub started_at: Option<String>,
 }
-
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DeletedPostInfo {
     pub post_id: i64,
@@ -484,7 +485,7 @@ pub async fn add_e621_post(app: AppHandle, post: E621PostInput) -> Result<Status
     let client = reqwest::Client::new();
     let resp = client
         .get(&post.file_url)
-        .header("User-Agent", "TailBurrow/0.3.1 (local archiver)")
+        .header("User-Agent", "TailBurrow/0.3.2 (local archiver)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -623,7 +624,7 @@ pub async fn e621_test_connection() -> Result<Status, String> {
   let resp = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.3.1 (test)")
+    .header("User-Agent", "TailBurrow/0.3.2 (test)")
     .query(&[("limit", "1"), ("tags", "order:id_desc")])
     .send()
     .await
@@ -644,7 +645,7 @@ pub async fn e621_fetch_posts(tags: String, limit: u32, page: Option<String>) ->
   let mut req = client
     .get("https://e621.net/posts.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.3.1 (feeds)")
+    .header("User-Agent", "TailBurrow/0.3.2 (feeds)")
     .query(&[("tags", tags), ("limit", limit.to_string())]);
 
   if let Some(p) = page {
@@ -741,7 +742,7 @@ fn download_and_insert_e621_post(
 
     let resp = client
         .get(&post.file_url)
-        .header("User-Agent", "TailBurrow/0.3.1 (local archiver)")
+        .header("User-Agent", "TailBurrow/0.3.2 (local archiver)")
         .send()
         .map_err(|e| e.to_string())?;
 
@@ -827,6 +828,7 @@ pub fn e621_sync_start(
       running: true,
       cancelled: false,
       max_new_downloads,
+      started_at: Some(Utc::now().to_rfc3339()),
       ..Default::default()
     };
   }
@@ -851,6 +853,8 @@ pub fn e621_sync_start(
           .unwrap_or_else(|_| reqwest::blocking::Client::new());
 
       let mut page: u32 = 1;
+      let mut consecutive_existing: u32 = 0;
+      const EARLY_STOP_THRESHOLD: u32 = 320; // Stop after a full page of existing items
 
       loop {
         // cancel check
@@ -871,15 +875,13 @@ pub fn e621_sync_start(
           }
         }
 
-        // fetch favorites page
-        let tags = format!("fav:{} order:id_desc", username);
+        // fetch favorites page (uses /favorites.json — ordered by favorite date, newest first)
         let resp = client
-          .get("https://e621.net/posts.json")
+          .get("https://e621.net/favorites.json")
           .basic_auth(&username, Some(&api_key))
-          .header("User-Agent", "TailBurrow/0.3.1 (sync)")
+          .header("User-Agent", "TailBurrow/0.3.2 (sync)")
           .query(&[
-            ("tags", tags.as_str()),
-            ("limit", "320"),
+            ("limit", "80"),
             ("page", &page.to_string()),
           ])
           .send()
@@ -950,6 +952,7 @@ pub fn e621_sync_start(
           if exists > 0 {
             let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
             st.status.skipped_existing += 1;
+            consecutive_existing += 1;
             continue;
           }
 
@@ -964,6 +967,7 @@ pub fn e621_sync_start(
             if md5_exists > 0 {
               let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
               st.status.skipped_existing += 1;
+              consecutive_existing += 1;
               continue;
             }
           }
@@ -1025,11 +1029,12 @@ pub fn e621_sync_start(
             },
           };
 
+          consecutive_existing = 0; // Reset — we found a new post
+
           {
             let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
             st.status.new_attempted += 1;
           }
-
         match download_and_insert_e621_post(&app2, &download_client, &post_input) {
             Ok(_) => {
               let mut st = state2.lock().map_err(|_| "Sync state lock poisoned")?;
@@ -1045,6 +1050,11 @@ pub fn e621_sync_start(
 
           // e621 API rules: max 2 requests/second
           std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        // Early stop: if an entire page was all existing, we've caught up
+        if consecutive_existing >= EARLY_STOP_THRESHOLD {
+          break;
         }
 
         page += 1;
@@ -1074,7 +1084,7 @@ pub async fn e621_favorite(post_id: i64) -> Result<Status, String> {
   let resp = client
     .post("https://e621.net/favorites.json")
     .basic_auth(username, Some(api_key))
-    .header("User-Agent", "TailBurrow/0.3.1 (favorite)")
+    .header("User-Agent", "TailBurrow/0.3.2 (favorite)")
     .header("Content-Type", "application/x-www-form-urlencoded")
     .body(format!("post_id={}", post_id))
     .send()
@@ -1697,7 +1707,7 @@ pub async fn proxy_remote_media(app: AppHandle, url: String) -> Result<String, S
     let client = reqwest::Client::new();
     let resp = client
         .get(&url)
-        .header("User-Agent", "TailBurrow/0.3.1 (media proxy)")
+        .header("User-Agent", "TailBurrow/0.3.2 (media proxy)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1832,7 +1842,7 @@ pub async fn check_posts_for_pools(app: AppHandle, ids: Vec<i64>) -> Result<Vec<
     let resp = client
         .get("https://e621.net/posts.json")
         .basic_auth(&username, Some(&api_key))
-        .header("User-Agent", "TailBurrow/0.3.1 (pools)")
+        .header("User-Agent", "TailBurrow/0.3.2 (pools)")
         .query(&[("tags", format!("id:{}", ids_param)), ("limit", "320".to_string())])
         .send()
         .await
@@ -1900,7 +1910,7 @@ pub async fn fetch_pool_infos_batch(_app: AppHandle, pool_ids: Vec<i64>) -> Resu
         let resp = client
             .get("https://e621.net/pools.json")
             .basic_auth(&username, Some(&api_key))
-            .header("User-Agent", "TailBurrow/0.3.1 (pools)")
+            .header("User-Agent", "TailBurrow/0.3.2 (pools)")
             .query(&[("search[id]", ids_str.as_str()), ("limit", "20")])
             .send()
             .await
@@ -1944,7 +1954,7 @@ pub async fn fetch_pool_infos_batch(_app: AppHandle, pool_ids: Vec<i64>) -> Resu
             let cover_resp = client
                 .get("https://e621.net/posts.json")
                 .basic_auth(&username, Some(&api_key))
-                .header("User-Agent", "TailBurrow/0.3.1 (pools)")
+                .header("User-Agent", "TailBurrow/0.3.2 (pools)")
                 .query(&[("tags", format!("id:{}", cover_ids)), ("limit", "320".to_string())])
                 .send()
                 .await;
@@ -2505,7 +2515,7 @@ pub fn maintenance_start_deleted_check(
     {
         let mut st = state.deleted_check.lock().map_err(|_| "Lock poisoned")?;
         if st.running { return Err("Already running".into()); }
-        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into() };
+        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into(), started_at: Some(Utc::now().to_rfc3339()) };
     }
     {
         let mut res = state.deleted_results.lock().map_err(|_| "Lock poisoned")?;
@@ -2536,7 +2546,7 @@ pub fn maintenance_start_deleted_check(
                 let resp = client
                     .get("https://e621.net/posts.json")
                     .basic_auth(&username, Some(&api_key))
-                    .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+                    .header("User-Agent", "TailBurrow/0.3.2 (maintenance)")
                     .query(&[
                         ("tags", tags.as_str()),
                         ("limit", "320"),
@@ -2610,7 +2620,7 @@ pub fn maintenance_start_deleted_check(
                 // Fetch HTML page — explicitly request HTML, no auth (avoids JSON redirect)
                 let reason = match client
                     .get(format!("https://e621.net/posts/{}", post_id))
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TailBurrow/0.3.1")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TailBurrow/0.3.2")
                     .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                     .send()
                 {
@@ -2746,7 +2756,7 @@ pub async fn e621_unfavorite(post_id: i64) -> Result<Status, String> {
     let resp = client
         .delete(format!("https://e621.net/favorites/{}.json", post_id))
         .basic_auth(username, Some(api_key))
-        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .header("User-Agent", "TailBurrow/0.3.2 (maintenance)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -2776,7 +2786,7 @@ pub fn maintenance_start_metadata_update(
     {
         let mut st = state.metadata_update.lock().map_err(|_| "Lock poisoned")?;
         if st.running { return Err("Already running".into()); }
-        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into() };
+        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into(), started_at: Some(Utc::now().to_rfc3339()) };
     }
 
     let state2 = state.inner().clone();
@@ -2842,7 +2852,7 @@ pub fn maintenance_start_metadata_update(
                 let resp = client
                     .get("https://e621.net/posts.json")
                     .basic_auth(&username, Some(&api_key))
-                    .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+                    .header("User-Agent", "TailBurrow/0.3.2 (maintenance)")
                     .query(&[
                         ("tags", format!("id:{}", ids_str)),
                         ("limit", "320".to_string()),
@@ -2999,7 +3009,7 @@ pub fn maintenance_start_fa_upgrade(
     {
         let mut st = state.fa_upgrade.lock().map_err(|_| "Lock poisoned")?;
         if st.running { return Err("Already running".into()); }
-        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into() };
+        *st = MaintenanceProgress { running: true, current: 0, total: 0, message: "Starting...".into(), started_at: Some(Utc::now().to_rfc3339()) };
     }
 
     let state2 = state.inner().clone();
@@ -3332,7 +3342,7 @@ fn find_e621_by_md5(
     let resp = client
         .get("https://e621.net/posts.json")
         .basic_auth(username, Some(api_key))
-        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .header("User-Agent", "TailBurrow/0.3.2 (maintenance)")
         .query(&[
             ("tags", format!("md5:{}", md5)),
             ("limit", "1".to_string()),
@@ -3407,7 +3417,7 @@ fn find_e621_by_iqdb(
     let resp = client
         .post("https://e621.net/iqdb_queries.json")
         .basic_auth(username, Some(api_key))
-        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .header("User-Agent", "TailBurrow/0.3.2 (maintenance)")
         .multipart(form)
         .send()
         .map_err(|e| e.to_string())?;
@@ -3467,7 +3477,7 @@ fn find_e621_by_id(
     let resp = client
         .get("https://e621.net/posts.json")
         .basic_auth(username, Some(api_key))
-        .header("User-Agent", "TailBurrow/0.3.1 (maintenance)")
+        .header("User-Agent", "TailBurrow/0.3.2 (maintenance)")
         .query(&[
             ("tags", format!("id:{}", post_id)),
             ("limit", "1".to_string()),
@@ -3522,4 +3532,78 @@ fn get_image_resolution(path: &std::path::Path) -> i64 {
         Ok((w, h)) => (w as i64) * (h as i64),
         Err(_) => 0,
     }
+}
+
+#[derive(Serialize)]
+pub struct TagSuggestion {
+    pub name: String,
+    pub tag_type: String,
+    pub count: i64,
+}
+
+#[tauri::command]
+pub fn search_tags(app: AppHandle, prefix: String, limit: Option<u32>) -> Result<Vec<TagSuggestion>, String> {
+    let limit = limit.unwrap_or(10);
+    let prefix = prefix.trim().to_lowercase();
+    if prefix.is_empty() {
+        return Ok(vec![]);
+    }
+
+    with_db(&app, |conn| {
+        let pattern = format!("{}%", prefix);
+        let mut stmt = conn.prepare(
+            "SELECT t.name, t.type, COUNT(it.item_id) as cnt \
+             FROM tags t \
+             LEFT JOIN item_tags it ON t.tag_id = it.tag_id \
+             WHERE t.name LIKE ?1 \
+             GROUP BY t.tag_id \
+             ORDER BY cnt DESC \
+             LIMIT ?2"
+        ).map_err(|e| e.to_string())?;
+
+        let rows = stmt.query_map(params![pattern, limit], |row| {
+            Ok(TagSuggestion {
+                name: row.get(0)?,
+                tag_type: row.get(1)?,
+                count: row.get(2)?,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    })
+}
+
+#[tauri::command]
+pub fn get_post_pools(app: AppHandle, source_id: String) -> Result<Vec<PoolInfo>, String> {
+    let root = get_root(&app)?;
+    let conn = db::open(&library::db_path(&root))?;
+
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT pool_id FROM post_pools WHERE source_id = ?"
+    ).map_err(|e| e.to_string())?;
+
+    let pool_ids: Vec<i64> = stmt
+        .query_map(params![source_id], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if pool_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Try to load from pools cache
+    let cache_file = root.join(".cache").join("pools_cache.json");
+    let cached: Vec<PoolInfo> = if cache_file.exists() {
+        let json = fs::read_to_string(&cache_file).unwrap_or_default();
+        serde_json::from_str(&json).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let result: Vec<PoolInfo> = pool_ids.iter()
+        .filter_map(|pid| cached.iter().find(|p| p.pool_id == *pid).cloned())
+        .collect();
+
+    Ok(result)
 }

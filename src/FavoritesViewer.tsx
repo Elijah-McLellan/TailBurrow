@@ -12,7 +12,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import Masonry from "react-masonry-css";
 
-const APP_VERSION = "0.3.1";
+const APP_VERSION = "0.3.2";
 const TOAST_DURATION_MS = 4000;
 
 // Video extensions
@@ -61,8 +61,8 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
 const HUD_TIMEOUT_MS = 2000;
 const FADE_DURATION_MS = 300;
 const TOOLTIP_GRACE_MS = 200;
-const INFINITE_SCROLL_MARGIN = "800px 0px";
-const FEED_PAGE_LIMIT = 50;
+const INFINITE_SCROLL_MARGIN = "2000px 0px";
+const FEED_PAGE_LIMIT = 200;
 
 // ─── TYPES ───────────────────────────────────────────────────
 type AppConfig = { library_root?: string | null };
@@ -115,7 +115,7 @@ type SyncStatus = {
   running: boolean; cancelled: boolean; max_new_downloads?: number | null;
   scanned_pages: number; scanned_posts: number; skipped_existing: number;
   new_attempted: number; downloaded_ok: number; failed_downloads: number;
-  unavailable: number; last_error?: string | null;
+  unavailable: number; last_error?: string | null; started_at?: string | null;
 };
 type UnavailableDto = { source: string; source_id: string; seen_at: string; reason: string; sources: string[] };
 type Feed = { id: number; name: string; query: string };
@@ -175,6 +175,7 @@ type MaintenanceProgress = {
   current: number;
   total: number;
   message: string;
+  started_at?: string | null;
 };
 
 type DeletedPostInfo = {
@@ -278,6 +279,21 @@ function parsePositiveInt(s: string): { ok: true; value: number | null } | { ok:
   const n = Number(trimmed);
   if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return { ok: false };
   return { ok: true, value: n };
+}
+
+function formatETA(startedAt: string | undefined | null, current: number, total: number): string | null {
+  if (!startedAt || current <= 0 || total <= 0 || current >= total) return null;
+  try {
+    const started = new Date(startedAt).getTime();
+    const now = Date.now();
+    const elapsed = (now - started) / 1000; // seconds
+    if (elapsed < 3) return null; // wait a few seconds before showing ETA
+    const rate = current / elapsed;
+    const remaining = (total - current) / rate;
+    if (remaining < 60) return `~${Math.ceil(remaining)}s left`;
+    if (remaining < 3600) return `~${Math.ceil(remaining / 60)}m left`;
+    return `~${Math.floor(remaining / 3600)}h ${Math.ceil((remaining % 3600) / 60)}m left`;
+  } catch { return null; }
 }
 
 // ─── EXTRACTED COMPONENTS (stable, outside main component) ───
@@ -519,7 +535,7 @@ const GridItem = React.memo(({ item, index, onSelect, isSelected, isMultiSelecte
           <video
             ref={videoRef}
             src={item.url}
-            className="w-full h-auto object-cover"
+            className="w-full h-auto object-cover max-h-[600px]"
             muted
             loop
             preload="metadata"
@@ -531,7 +547,7 @@ const GridItem = React.memo(({ item, index, onSelect, isSelected, isMultiSelecte
           </div>
         </div>
       ) : (
-        <Thumbnail item={item} className="w-full h-auto object-cover" />
+        <Thumbnail item={item} className="w-full h-auto object-cover max-h-[600px]" />
       )}
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none">
         <div className="flex items-center gap-1.5 mb-1">
@@ -940,6 +956,10 @@ function FavoritesViewerInner() {
   const [activeTab, setActiveTab] = useState('viewer');
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [searchTags, setSearchTags] = useState('');
+  const [tagSuggestions, setTagSuggestions] = useState<{ name: string; tag_type: string; count: number }[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+  const suggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sortOrder, setSortOrder] = useState(() => localStorage.getItem('preferred_sort_order') || 'default');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -994,6 +1014,7 @@ function FavoritesViewerInner() {
   const [showSpeedSlider, setShowSpeedSlider] = useState(false);
   const speedSliderRef = useRef<HTMLDivElement>(null);
   const [libraryDetailOpen, setLibraryDetailOpen] = useState(false);
+  const [currentPostPools, setCurrentPostPools] = useState<PoolInfo[]>([]);
   const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(new Set());
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
   const [showBulkTagModal, setShowBulkTagModal] = useState(false);
@@ -1030,7 +1051,8 @@ function FavoritesViewerInner() {
   const [totalDatabaseItems, setTotalDatabaseItems] = useState(0);
   const [itemsPerPage, setItemsPerPage] = useState(() => Number(localStorage.getItem('items_per_page') || 100));
   const loadingRef = useRef(false);
-  const loadRequestIdRef = useRef(0); // For cancellation
+  const loadRequestIdRef = useRef(0);
+  const currentIndexRef = useRef(0);
   const itemsRef = useRef<LibraryItem[]>([]);
   const hasMoreRef = useRef(true);
   const faSyncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1105,6 +1127,8 @@ function FavoritesViewerInner() {
   const [comicAutoscrollSpeed, setComicAutoscrollSpeed] = useState(1);
   const [poolScanProgress, setPoolScanProgress] = useState<{ current: number; total: number } | null>(null);
   const comicContainerRef = useRef<HTMLDivElement>(null);
+  const poolScrollPositions = useRef<Map<number, number>>(new Map());
+  const activeVideoRef = useRef<HTMLVideoElement | null>(null);
 
   // Self Import
   const [showImportModal, setShowImportModal] = useState(false);
@@ -1147,7 +1171,7 @@ function FavoritesViewerInner() {
   useEffect(() => { safeModeRef.current = safeMode; }, [safeMode]);
   useEffect(() => { itemsPerPageRef.current = itemsPerPage; }, [itemsPerPage]);
 
-  useEffect(() => { itemsRef.current = items; }, [items]);
+  useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
   useEffect(() => { hasMoreRef.current = hasMoreItems; }, [hasMoreItems]);
   useEffect(() => { searchTagsRef.current = searchTags; }, [searchTags]);
   useEffect(() => { selectedTagsRef.current = selectedTags; }, [selectedTags]);
@@ -1252,22 +1276,32 @@ function FavoritesViewerInner() {
   // --- NAVIGATION ---
   const goToNext = useCallback((manual = false) => {
     if (viewerOverlay && manual) pokeHud();
+
+    const len = itemsRef.current.length;
+    if (len === 0) return;
+    const atEnd = currentIndexRef.current >= len - 1;
+
+    if (atEnd && hasMoreRef.current) {
+      loadMoreItems();
+      return;
+    }
+
     if (viewerOverlay) {
       setFadeIn(false);
       setTimeout(() => {
         setCurrentIndex(prev => {
-          const len = itemsRef.current.length;
-          return len === 0 ? 0 : (prev + 1) % len;
+          const l = itemsRef.current.length;
+          return l === 0 ? 0 : (prev + 1) % l;
         });
         requestAnimationFrame(() => setFadeIn(true));
       }, FADE_DURATION_MS);
     } else {
       setCurrentIndex(prev => {
-        const len = itemsRef.current.length;
-        return len === 0 ? 0 : (prev + 1) % len;
+        const l = itemsRef.current.length;
+        return l === 0 ? 0 : (prev + 1) % l;
       });
     }
-  }, [viewerOverlay, pokeHud]);
+  }, [viewerOverlay, pokeHud, loadMoreItems]);
 
   const goToPrev = useCallback((manual = false) => {
     if (viewerOverlay && manual) pokeHud();
@@ -1422,6 +1456,8 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [feedSearchInput, feedSearchResults, selectedFeedId, feedPosts]);
 
   useEffect(() => {
+    // Pause any playing video when switching feed posts
+    document.querySelectorAll<HTMLVideoElement>('video[autoplay]').forEach(v => v.pause());
     setFeedImageLoading(true);
     setFeedFadeIn(true);
   }, [selectedFeedPost?.id]);
@@ -1554,6 +1590,23 @@ if (loadingFeedsRef.current[feedId]) return;
       setInitialLoading(false);
     }
   }, [loadData]);
+
+  const fetchTagSuggestions = useCallback(async (prefix: string) => {
+    if (prefix.length < 2) {
+      setTagSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    try {
+      const results = await invoke<{ name: string; tag_type: string; count: number }[]>("search_tags", { prefix, limit: 8 });
+      setTagSuggestions(results);
+      setShowSuggestions(results.length > 0);
+      setSelectedSuggestionIndex(-1);
+    } catch {
+      setTagSuggestions([]);
+      setShowSuggestions(false);
+    }
+  }, []);
 
   const toggleTag = useCallback((tag: string) => {
     setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
@@ -1691,6 +1744,13 @@ if (loadingFeedsRef.current[feedId]) return;
     try {
       const posts = await invoke<PoolPost[]>("get_pool_posts", { poolId: pool.pool_id });
       setPoolPosts(posts);
+      // Restore scroll position after render
+      requestAnimationFrame(() => {
+        const saved = poolScrollPositions.current.get(pool.pool_id);
+        if (saved && comicContainerRef.current) {
+          comicContainerRef.current.scrollTop = saved;
+        }
+      });
     } catch (e) {
       toast("Failed to load pool posts: " + String(e), "error");
     } finally {
@@ -1699,10 +1759,14 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [toast]);
 
   const closePool = useCallback(() => {
+    // Save scroll position before leaving
+    if (selectedPool && comicContainerRef.current) {
+      poolScrollPositions.current.set(selectedPool.pool_id, comicContainerRef.current.scrollTop);
+    }
     setSelectedPool(null);
     setPoolPosts([]);
     setComicAutoscroll(false);
-  }, []);
+  }, [selectedPool]);
 
   // --- SELF IMPORT ---
   const selectImportFiles = useCallback(async () => {
@@ -2098,7 +2162,8 @@ if (loadingFeedsRef.current[feedId]) return;
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (target && target.tagName === "SELECT") { (target as HTMLElement).blur(); }
 
       const key = e.key.toLowerCase();
 
@@ -2183,6 +2248,10 @@ if (loadingFeedsRef.current[feedId]) return;
       if (activeTab === "feeds" && feedDetailOpen && selectedFeedPost) {
         if (key === "a" || e.key === "ArrowLeft") { e.preventDefault(); goToPrevFeedPost(); }
         else if (key === "d" || e.key === "ArrowRight") { e.preventDefault(); goToNextFeedPost(); }
+        else if (key === "s" || key === " ") {
+          e.preventDefault();
+          ensureFavorite(selectedFeedId ?? -1, selectedFeedPost);
+        }
         else if (key === "f") {
           e.preventDefault();
           (async () => {
@@ -2209,7 +2278,8 @@ if (loadingFeedsRef.current[feedId]) return;
     showSettings, showEditModal, showTrashModal, showAddFeedModal, showImportModal,
     selectedPool, closePool, confirmModal, libraryDetailOpen,
     selectedItemIds, deselectAll, selectAll, showBulkTagModal,
-    feedDetailOpen, selectedFeedPost, goToPrevFeedPost, goToNextFeedPost]);
+    feedDetailOpen, selectedFeedPost, goToPrevFeedPost, goToNextFeedPost,
+    ensureFavorite, selectedFeedId]);
 
   // HUD management
   useEffect(() => { if (viewerOverlay) pokeHud(); }, [viewerOverlay, pokeHud]);
@@ -2314,6 +2384,24 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [showSpeedSlider]);
 
   useEffect(() => {
+    if (!currentItem || currentItem.source !== 'e621') {
+      setCurrentPostPools([]);
+      return;
+    }
+    let cancelled = false;
+    invoke<PoolInfo[]>("get_post_pools", { sourceId: currentItem.source_id })
+      .then(pools => { if (!cancelled) setCurrentPostPools(pools); })
+      .catch(() => { if (!cancelled) setCurrentPostPools([]); });
+    return () => { cancelled = true; };
+  }, [currentItem?.item_id]);
+
+  useEffect(() => {
+    // Pause previous video before switching
+    if (activeVideoRef.current) {
+      activeVideoRef.current.pause();
+      activeVideoRef.current.currentTime = 0;
+      activeVideoRef.current = null;
+    }
     setImageLoading(true);
   }, [currentIndex]);
 
@@ -2351,7 +2439,7 @@ if (loadingFeedsRef.current[feedId]) return;
 
   // Auto-load more when near end in single view
   useEffect(() => {
-    const threshold = Math.max(0, itemCount - 20);
+    const threshold = Math.max(0, itemCount - 50);
     if (hasMoreItems && !isLoadingMore && currentIndex >= threshold && itemCount > 0) {
       loadMoreItems();
     }
@@ -2371,9 +2459,14 @@ if (loadingFeedsRef.current[feedId]) return;
     }
 
     if (!initialLoading) {
+      // Cancel any in-flight requests
+      loadRequestIdRef.current++;
+      itemsRef.current = [];
+      hasMoreRef.current = true;
       setItems([]);
       setSelectedItemIds(new Set());
       setHasMoreItems(true);
+      setCurrentIndex(0);
       loadData(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2385,18 +2478,18 @@ if (loadingFeedsRef.current[feedId]) return;
     if (!autoscroll) return;
     let frameId: number;
     const scroll = () => {
-      if ( activeTab === 'feeds') {
-        // Find the scrollable container
-        if (!autoscrollTargetRef.current) {
-          const candidates = document.querySelectorAll('.overflow-y-auto');
-          for (const el of candidates) {
-            if (el.scrollHeight > el.clientHeight) {
-              autoscrollTargetRef.current = el as HTMLElement;
-              break;
-            }
+      // Find the scrollable container for both library and feeds
+      if (!autoscrollTargetRef.current) {
+        const candidates = document.querySelectorAll('.overflow-y-auto');
+        for (const el of candidates) {
+          if (el.scrollHeight > el.clientHeight) {
+            autoscrollTargetRef.current = el as HTMLElement;
+            break;
           }
         }
-        autoscrollTargetRef.current?.scrollBy(0, autoscrollSpeed);
+      }
+      if (autoscrollTargetRef.current) {
+        autoscrollTargetRef.current.scrollBy(0, autoscrollSpeed);
       } else {
         window.scrollBy(0, autoscrollSpeed);
       }
@@ -2702,74 +2795,155 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       ) : (
                         <div className="w-full relative flex items-center flex-wrap gap-1 min-h-[34px] pl-9 pr-3 py-1 rounded-xl bg-[#1c1b26] border border-[#1d1b2d] focus-within:border-[#967abc] transition-colors">
                           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#4c4b5a] pointer-events-none" />
-                          {selectedTags.map(tag => (
-                            <span
-                              key={tag}
-                              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[#967abc]/25 text-[#967abc] border border-[#967abc]/30"
-                            >
-                              {tag}
-                              <button
-                                onClick={() => toggleTag(tag)}
-                                className="transition-colors"
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
-                            </span>
-                          ))}
-                          <input
-                            type="text"
-                            placeholder={selectedTags.length === 0 ? "Search tags..." : ""}
-                            value={searchTags}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              // Check if user typed a space — tokenize
-                              if (val.endsWith(' ')) {
-                                const tag = val.trim().toLowerCase();
-                                if (tag && !selectedTags.includes(tag)) {
-                                  setSelectedTags(prev => [...prev, tag]);
-                                }
-                                setSearchTags('');
-                              } else {
-                                setSearchTags(val);
-                              }
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                const tag = searchTags.trim().toLowerCase();
-                                if (tag && !selectedTags.includes(tag)) {
-                                  // Add tag and trigger search
+                          {selectedTags.map(tag => {
+                            const isNegative = tag.startsWith('-');
+                            return (
+                              <span
+                                key={tag}
+                                className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border cursor-pointer select-none ${
+                                  isNegative
+                                    ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                                    : 'bg-[#967abc]/25 text-[#967abc] border-[#967abc]/30'
+                                }`}
+                                onClick={() => {
                                   pendingTagSearchRef.current = true;
-                                  setSelectedTags(prev => [...prev, tag]);
+                                  setSelectedTags(prev =>
+                                    prev.map(t => t === tag ? (isNegative ? tag.slice(1) : `-${tag}`) : t)
+                                  );
+                                }}
+                              >
+                                {isNegative && <span className="font-bold mr-0.5">−</span>}
+                                {isNegative ? tag.slice(1) : tag}
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); pendingTagSearchRef.current = true; toggleTag(tag); }}
+                                  className="transition-colors"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </span>
+                            );
+                          })}
+                          <div className="flex-1 min-w-[80px] relative">
+                            <input
+                              type="text"
+                              placeholder={selectedTags.length === 0 ? "Search tags..." : ""}
+                              value={searchTags}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val.endsWith(' ')) {
+                                  const tag = val.trim().toLowerCase();
+                                  if (tag && !selectedTags.includes(tag)) {
+                                    setSelectedTags(prev => [...prev, tag]);
+                                  }
                                   setSearchTags('');
+                                  setShowSuggestions(false);
                                 } else {
-                                  // No new tag — search with current pills
-                                  setSearchTags('');
-                                  setItems([]);
-                                  setSelectedItemIds(new Set());
-                                  setHasMoreItems(true);
-                                  loadData(false);
+                                  setSearchTags(val);
+                                  if (suggestionTimeoutRef.current) clearTimeout(suggestionTimeoutRef.current);
+                                  suggestionTimeoutRef.current = setTimeout(() => fetchTagSuggestions(val.trim()), 200);
                                 }
-                              }
-                              if (e.key === 'Backspace' && searchTags === '' && selectedTags.length > 0) {
-                                setSelectedTags(prev => prev.slice(0, -1));
-                              }
-                            }}
-                            className="flex-1 min-w-[80px] bg-transparent text-sm text-white placeholder-[#4c4b5a] focus:outline-none py-0.5"
-                          />
+                              }}
+                              onKeyDown={(e) => {
+                                if (showSuggestions && tagSuggestions.length > 0) {
+                                  if (e.key === 'ArrowDown') {
+                                    e.preventDefault();
+                                    setSelectedSuggestionIndex(prev => Math.min(prev + 1, tagSuggestions.length - 1));
+                                    return;
+                                  }
+                                  if (e.key === 'ArrowUp') {
+                                    e.preventDefault();
+                                    setSelectedSuggestionIndex(prev => Math.max(prev - 1, -1));
+                                    return;
+                                  }
+                                  if (e.key === 'Tab' && selectedSuggestionIndex >= 0) {
+                                    e.preventDefault();
+                                    const tag = tagSuggestions[selectedSuggestionIndex].name;
+                                    if (!selectedTags.includes(tag)) {
+                                      pendingTagSearchRef.current = true;
+                                      setSelectedTags(prev => [...prev, tag]);
+                                    }
+                                    setSearchTags('');
+                                    setShowSuggestions(false);
+                                    return;
+                                  }
+                                }
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  const tag = selectedSuggestionIndex >= 0 && showSuggestions
+                                    ? tagSuggestions[selectedSuggestionIndex].name
+                                    : searchTags.trim().toLowerCase();
+                                  if (tag && !selectedTags.includes(tag)) {
+                                    pendingTagSearchRef.current = true;
+                                    setSelectedTags(prev => [...prev, tag]);
+                                    setSearchTags('');
+                                  } else if (!tag) {
+                                    setSearchTags('');
+                                    setItems([]);
+                                    setSelectedItemIds(new Set());
+                                    setHasMoreItems(true);
+                                    loadData(false);
+                                  }
+                                  setShowSuggestions(false);
+                                }
+                                if (e.key === 'Escape') {
+                                  setShowSuggestions(false);
+                                }
+                                if (e.key === 'Backspace' && searchTags === '' && selectedTags.length > 0) {
+                                  pendingTagSearchRef.current = true;
+                                  setSelectedTags(prev => prev.slice(0, -1));
+                                }
+                              }}
+                              onFocus={() => { if (searchTags.trim().length >= 2) fetchTagSuggestions(searchTags.trim()); }}
+                              onBlur={() => { setTimeout(() => setShowSuggestions(false), 200); }}
+                              className="w-full bg-transparent text-sm text-white placeholder-[#4c4b5a] focus:outline-none py-0.5"
+                            />
+                            {showSuggestions && tagSuggestions.length > 0 && (
+                              <div className="absolute top-full left-0 mt-1 w-64 max-h-60 overflow-y-auto rounded-xl bg-[#161621] border border-[#1d1b2d] shadow-xl z-50">
+                                {tagSuggestions.map((s, i) => {
+                                  const typeColor = s.tag_type === 'artist' ? 'text-yellow-400'
+                                    : s.tag_type === 'character' ? 'text-green-400'
+                                    : s.tag_type === 'species' ? 'text-red-400'
+                                    : s.tag_type === 'copyright' ? 'text-pink-400'
+                                    : s.tag_type === 'meta' ? 'text-gray-400'
+                                    : s.tag_type === 'lore' ? 'text-purple-300'
+                                    : 'text-blue-300';
+                                  return (
+                                    <button
+                                      key={s.name}
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        if (!selectedTags.includes(s.name)) {
+                                          pendingTagSearchRef.current = true;
+                                          setSelectedTags(prev => [...prev, s.name]);
+                                        }
+                                        setSearchTags('');
+                                        setShowSuggestions(false);
+                                      }}
+                                      className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between transition-colors ${
+                                        i === selectedSuggestionIndex ? 'bg-[#967abc]/20' : 'hover:bg-[#1d1b2d]'
+                                      }`}
+                                    >
+                                      <span className={typeColor}>{s.name}</span>
+                                      <span className="text-[10px] text-[#4c4b5a]">{s.count}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       )}
                   </div>
                   {activeTab === 'viewer' && (
                     <>
-                      <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}>
+                      <select value={sortOrder} onChange={(e) => { setSortOrder(e.target.value); e.target.blur(); }} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}>
                         <option value="default">Default</option>
                         <option value="random">Random</option>
                         <option value="score">Score</option>
                         <option value="newest">Newest</option>
                         <option value="oldest">Oldest</option>
                       </select>
-                      <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}>
+                      <select value={filterSource} onChange={(e) => { setFilterSource(e.target.value); e.target.blur(); }} className={`px-3 py-1.5 text-sm rounded-xl focus:outline-none bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc]`}>
                         <option value="all">All</option>
                         <option value="e621">e621</option>
                         <option value="furaffinity">FurAffinity</option>
@@ -2822,7 +2996,13 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
             <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={goToPrevFeedPost} />
             <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={goToNextFeedPost} />
 
-            <div className="w-full h-full flex items-center justify-center">
+            <div className="w-full h-full flex items-center justify-center relative">
+              {selectedFeedPost.file.ext !== 'webm' && selectedFeedPost.file.ext !== 'mp4' && (
+                <div
+                  className="absolute inset-0 scale-110 blur-3xl opacity-15"
+                  style={{ backgroundImage: `url(${selectedFeedPost.sample.url || selectedFeedPost.file.url || ''})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                />
+              )}
               {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
                 <video
                   key={selectedFeedPost.id}
@@ -2913,10 +3093,17 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
             <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} />
 
             {/* Media */}
-            <div className="w-full h-full flex items-center justify-center">
+            <div className="w-full h-full flex items-center justify-center relative">
+              {!isVideo && currentItem && (
+                <div
+                  className="absolute inset-0 scale-110 blur-3xl opacity-15"
+                  style={{ backgroundImage: `url(${currentItem.url})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                />
+              )}
               {isVideo ? (
                 <video
                   key={currentItem.url}
+                  ref={(el) => { activeVideoRef.current = el; }}
                   src={currentItem.url}
                   controls
                   autoPlay
@@ -2979,7 +3166,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {activeTab === 'viewer' && (
         <div className="flex-1 flex overflow-hidden bg-[#0f0f17]">
           {/* Grid */}
-          <div className={`${libraryDetailOpen && currentItem ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto overflow-x-hidden relative`} style={libraryDetailOpen && currentItem ? { width: `calc(100% - ${libraryDetailWidth}px - 6px)` } : undefined}>
+          <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden relative">
             <div className="p-4">
               {(initialLoading || isSearching) ? (
                 <Masonry
@@ -2987,7 +3174,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   className="flex w-auto gap-3"
                   columnClassName="flex flex-col gap-3"
                 >
-                  {Array.from({ length: gridColumns * 3 }).map((_, i) => (
+                  {Array.from({ length: (libraryDetailOpen ? Math.max(2, gridColumns - 2) : gridColumns) * 3 }).map((_, i) => (
                     <SkeletonGridItem key={`init-skeleton-${i}`} index={i} dark />
                   ))}
                 </Masonry>
@@ -3014,7 +3201,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         onMultiClick={handleGridClick}
                       />
                     ))}
-                    {isLoadingMore && Array.from({ length: gridColumns * 2 }).map((_, i) => (
+                    {isLoadingMore && Array.from({ length: (libraryDetailOpen ? Math.max(2, gridColumns - 2) : gridColumns) * 2 }).map((_, i) => (
                       <SkeletonGridItem key={`skeleton-${i}`} index={i} dark />
                     ))}
                   </Masonry>
@@ -3114,12 +3301,19 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           {libraryDetailOpen && currentItem && (
             <>
               <ResizeHandle onDrag={handleLibraryDetailResize} />
-              <div style={{ width: libraryDetailWidth }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
+          <div style={{ width: libraryDetailWidth, maxWidth: '60vw', minWidth: 300 }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
 
                 {/* Everything below header scrolls together */}
                 <div className="flex-1 min-h-0 overflow-y-auto">
                   {/* Media */}
-                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 120px)', minHeight: '300px' }}>
+                  <div className="relative bg-[#0a0a12] flex items-center justify-center overflow-hidden" style={{ height: 'calc(100vh - 120px)', minHeight: '300px' }}>
+                    {/* Blurred background */}
+                    {currentItem && !isVideo && (
+                      <div
+                        className="absolute inset-0 scale-110 blur-3xl opacity-20"
+                        style={{ backgroundImage: `url(${currentItem.url})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                      />
+                    )}
                     <button
                       onClick={() => setLibraryDetailOpen(false)}
                       className="absolute top-2 right-2 z-20 p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
@@ -3134,6 +3328,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     {isVideo ? (
                       <video
                         key={currentItem.url}
+                        ref={(el) => { activeVideoRef.current = el; }}
                         src={currentItem.url}
                         controls
                         autoPlay
@@ -3220,6 +3415,23 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                           {currentItem.rating === 'e' ? 'Explicit' : currentItem.rating === 'q' ? 'Questionable' : 'Safe'}
                         </span>
                       </div>
+                      {currentPostPools.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {currentPostPools.map(pool => (
+                            <button
+                              key={pool.pool_id}
+                              onClick={() => {
+                                setActiveTab('comics');
+                                openPool(pool);
+                              }}
+                              className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#967abc] transition-colors"
+                            >
+                              <BookOpen className="w-3 h-3" />
+                              {pool.name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
                         {currentItem.source === 'e621' && (
                           <button onClick={() => openExternalUrl(`https://e621.net/posts/${currentItem.source_id}`)} className="text-[#967abc] hover:text-[#967abc]/80 underline">e621</button>
@@ -3250,7 +3462,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {activeTab === 'feeds' && (
         <div ref={feedsContainerRef} className={`flex-1 flex overflow-hidden bg-[#0f0f17]`}>
           {/* Feed grid pane */}
-          <div className={`${feedDetailOpen && selectedFeedPost ? 'flex-shrink-0' : 'flex-1'} overflow-y-auto`} style={feedDetailOpen && selectedFeedPost ? { width: `calc(100% - ${feedDetailWidth}px - 6px)` } : undefined}>
+          <div className="flex-1 min-w-0 overflow-y-auto">
             <div className={"p-4"}>
               {/* Feed pills */}
               <div className="flex justify-center items-center gap-2 mb-4 flex-wrap relative">
@@ -3533,12 +3745,19 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           {feedDetailOpen && selectedFeedPost && (
             <>
               <ResizeHandle onDrag={handleFeedDetailResize} />
-              <div style={{ width: feedDetailWidth }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
+              <div style={{ width: feedDetailWidth, maxWidth: '60vw', minWidth: 300 }} className="flex-shrink-0 flex flex-col h-full bg-[#161621] border-l border-[#1d1b2d]">
 
                 {/* Everything below header scrolls together */}
                 <div className="flex-1 min-h-0 overflow-y-auto">
                   {/* Media */}
-                  <div className="relative bg-[#0a0a12] flex items-center justify-center" style={{ height: 'calc(100vh - 120px)', minHeight: '300px' }}>
+                  <div className="relative bg-[#0a0a12] flex items-center justify-center overflow-hidden" style={{ height: 'calc(100vh - 120px)', minHeight: '300px' }}>
+                    {/* Blurred background */}
+                    {selectedFeedPost && selectedFeedPost.file.ext !== 'webm' && selectedFeedPost.file.ext !== 'mp4' && (
+                      <div
+                        className="absolute inset-0 scale-110 blur-3xl opacity-20"
+                        style={{ backgroundImage: `url(${selectedFeedPost.sample.url || selectedFeedPost.file.url || ''})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                      />
+                    )}
                     <button
                       onClick={() => {
                         setFeedDetailOpen(false);
@@ -4069,27 +4288,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                           </div>
                         </div>
                       )}
-
-                      {/* e621 sync */}
-                      <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-3 mt-3">
-                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">Favorites Sync</h4>
-                        <div className="flex gap-2 items-center">
-                          <input type="text" placeholder="Limit (optional)" value={syncMaxNew} onChange={(e) => setSyncMaxNew(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
-                          <button onClick={startSync} disabled={!!syncStatus?.running || !e621CredInfo.has_api_key} className="px-4 py-2 rounded-xl text-sm bg-[#967abc] hover:bg-[#967abc]/80 disabled:opacity-40 disabled:cursor-not-allowed">
-                            {syncStatus?.running ? "Syncing..." : "Start"}
-                          </button>
-                          {syncStatus?.running && <button onClick={cancelSync} className="px-3 py-2 rounded-xl text-sm bg-red-600 hover:bg-red-700">Stop</button>}
-                        </div>
-                        {syncStatus && (syncStatus.running || syncStatus.scanned_pages > 0) && (
-                          <div className="mt-3 text-xs text-[#9e98aa] space-y-0.5">
-                            <div>Pages: {syncStatus.scanned_pages} • Posts: {syncStatus.scanned_posts}</div>
-                            <div>Skipped: {syncStatus.skipped_existing} • Downloaded: {syncStatus.downloaded_ok}</div>
-                            <div>Failed: {syncStatus.failed_downloads} • Unavailable: {syncStatus.unavailable}</div>
-                            {syncStatus.last_error && <div className="text-red-300 break-words">Error: {syncStatus.last_error}</div>}
-                            <button onClick={loadUnavailable} className="mt-1 text-[#967abc] hover:underline text-xs">View unavailable →</button>
-                          </div>
-                        )}
-                      </div>
                     </div>
 
                     {/* FurAffinity */}
@@ -4141,27 +4339,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                           </div>
                         </div>
                       )}
-
-                      {/* FA sync */}
-                      <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-3 mt-3">
-                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">Favorites Sync</h4>
-                        <div className="flex gap-2 items-center">
-                          <input type="text" placeholder="Limit (optional)" value={faLimit} onChange={(e) => setFaLimit(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
-                          <button onClick={startFaSync} disabled={faStatus?.running || (!faCredsSet && !isEditingFA)} className="px-4 py-2 rounded-xl text-sm bg-[#967abc] hover:bg-[#967abc]/80 disabled:opacity-40 disabled:cursor-not-allowed">
-                            {faStatus?.running ? "Syncing..." : "Start"}
-                          </button>
-                          {faStatus?.running && <button onClick={cancelFaSync} className="px-3 py-2 rounded-xl text-sm bg-red-600 hover:bg-red-700">Stop</button>}
-                        </div>
-                        {faStatus && (faStatus.running || faStatus.scanned > 0) && (
-                          <div className="mt-3 text-xs text-[#9e98aa] space-y-0.5">
-                            <div>{faStatus.current_message}</div>
-                            <div>Scanned: {faStatus.scanned} • Skip URL: {faStatus.skipped_url} • Skip MD5: {faStatus.skipped_md5}</div>
-                            <div className="text-purple-400">Upgraded to e621: {faStatus.upgraded}</div>
-                            <div className="text-green-400">FA Exclusives: {faStatus.imported}</div>
-                            <div>Errors: {faStatus.errors}</div>
-                          </div>
-                        )}
-                      </div>
                     </div>
                   </>
                 )}
@@ -4224,6 +4401,47 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                 {/* ════════ MAINTENANCE TAB ════════ */}
                 {settingsTab === 'maintenance' && (
                   <>
+                    {/* e621 sync */}
+                      <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-3 mt-3">
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">Favorites Sync</h4>
+                        <div className="flex gap-2 items-center">
+                          <input type="text" placeholder="Limit (optional)" value={syncMaxNew} onChange={(e) => setSyncMaxNew(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
+                          <button onClick={startSync} disabled={!!syncStatus?.running || !e621CredInfo.has_api_key} className="px-4 py-2 rounded-xl text-sm bg-[#967abc] hover:bg-[#967abc]/80 disabled:opacity-40 disabled:cursor-not-allowed">
+                            {syncStatus?.running ? "Syncing..." : "Start"}
+                          </button>
+                          {syncStatus?.running && <button onClick={cancelSync} className="px-3 py-2 rounded-xl text-sm bg-red-600 hover:bg-red-700">Stop</button>}
+                        </div>
+                        {syncStatus && (syncStatus.running || syncStatus.scanned_pages > 0) && (
+                          <div className="mt-3 text-xs text-[#9e98aa] space-y-0.5">
+                            <div>Pages: {syncStatus.scanned_pages} • Posts: {syncStatus.scanned_posts}</div>
+                            <div>Skipped: {syncStatus.skipped_existing} • Downloaded: {syncStatus.downloaded_ok}</div>
+                            <div>Failed: {syncStatus.failed_downloads} • Unavailable: {syncStatus.unavailable}</div>
+                            {syncStatus.last_error && <div className="text-red-300 break-words">Error: {syncStatus.last_error}</div>}
+                            <button onClick={loadUnavailable} className="mt-1 text-[#967abc] hover:underline text-xs">View unavailable →</button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* FA sync */}
+                      <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-3 mt-3">
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">Favorites Sync</h4>
+                        <div className="flex gap-2 items-center">
+                          <input type="text" placeholder="Limit (optional)" value={faLimit} onChange={(e) => setFaLimit(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
+                          <button onClick={startFaSync} disabled={faStatus?.running || (!faCredsSet && !isEditingFA)} className="px-4 py-2 rounded-xl text-sm bg-[#967abc] hover:bg-[#967abc]/80 disabled:opacity-40 disabled:cursor-not-allowed">
+                            {faStatus?.running ? "Syncing..." : "Start"}
+                          </button>
+                          {faStatus?.running && <button onClick={cancelFaSync} className="px-3 py-2 rounded-xl text-sm bg-red-600 hover:bg-red-700">Stop</button>}
+                        </div>
+                        {faStatus && (faStatus.running || faStatus.scanned > 0) && (
+                          <div className="mt-3 text-xs text-[#9e98aa] space-y-0.5">
+                            <div>{faStatus.current_message}</div>
+                            <div>Scanned: {faStatus.scanned} • Skip URL: {faStatus.skipped_url} • Skip MD5: {faStatus.skipped_md5}</div>
+                            <div className="text-purple-400">Upgraded to e621: {faStatus.upgraded}</div>
+                            <div className="text-green-400">FA Exclusives: {faStatus.imported}</div>
+                            <div>Errors: {faStatus.errors}</div>
+                          </div>
+                        )}
+                      </div>
                     {/* Find Duplicates */}
                     <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-4">
                       <div className="flex items-start justify-between">
@@ -4276,7 +4494,6 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         </div>
                       )}
                     </div>
-
                     {/* Check Deleted Posts */}
                     <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-4">
                       <div className="flex items-start justify-between">
@@ -4299,7 +4516,15 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         <div className="mt-3">
                           <div className="flex justify-between text-[10px] text-[#9e98aa] mb-1">
                             <span>{deletedCheckStatus.message}</span>
-                            {deletedCheckStatus.total > 0 && <span>{deletedCheckStatus.current}/{deletedCheckStatus.total}</span>}
+                          {deletedCheckStatus.total > 0 && (
+                            <span>
+                              {deletedCheckStatus.current}/{deletedCheckStatus.total}
+                              {(() => {
+                                const eta = formatETA(deletedCheckStatus.started_at, deletedCheckStatus.current, deletedCheckStatus.total);
+                                return eta ? ` • ${eta}` : '';
+                              })()}
+                            </span>
+                          )}
                           </div>
                           {deletedCheckStatus.total > 0 && (
                             <div className="w-full h-1.5 bg-[#0f0f17] rounded-full overflow-hidden">
