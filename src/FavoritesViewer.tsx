@@ -1013,6 +1013,7 @@ function FavoritesViewerInner() {
   const [feedFadeIn, setFeedFadeIn] = useState(true);
   const [showSpeedSlider, setShowSpeedSlider] = useState(false);
   const speedSliderRef = useRef<HTMLDivElement>(null);
+  const savedVideoTimeRef = useRef(0);
   const [libraryDetailOpen, setLibraryDetailOpen] = useState(false);
   const [currentPostPools, setCurrentPostPools] = useState<PoolInfo[]>([]);
   const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(new Set());
@@ -1025,6 +1026,7 @@ function FavoritesViewerInner() {
   const [showSettings, setShowSettings] = useState(false);
   const [libraryRoot, setLibraryRoot] = useState("");
   const [syncMaxNew, setSyncMaxNew] = useState<string>("");
+  const [syncFullMode, setSyncFullMode] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [showUnavailable, setShowUnavailable] = useState(false);
   const [unavailableList, setUnavailableList] = useState<UnavailableDto[]>([]);
@@ -1128,7 +1130,11 @@ function FavoritesViewerInner() {
   const [poolScanProgress, setPoolScanProgress] = useState<{ current: number; total: number } | null>(null);
   const comicContainerRef = useRef<HTMLDivElement>(null);
   const poolScrollPositions = useRef<Map<number, number>>(new Map());
-  const activeVideoRef = useRef<HTMLVideoElement | null>(null);
+  const detailVideoRef = useRef<HTMLVideoElement | null>(null);
+  const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const feedDetailVideoRef = useRef<HTMLVideoElement | null>(null);
+  const feedFullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const savedFeedVideoTimeRef = useRef(0);
 
   // Self Import
   const [showImportModal, setShowImportModal] = useState(false);
@@ -1338,10 +1344,10 @@ function FavoritesViewerInner() {
   const startSync = useCallback(async () => {
     const parsed = parsePositiveInt(syncMaxNew);
     if (!parsed.ok) { toast("Stop-after-N must be a positive number or blank.", "error"); return; }
-    await invoke("e621_sync_start", { maxNewDownloads: parsed.value });
+    await invoke("e621_sync_start", { maxNewDownloads: parsed.value, forceFullSync: syncFullMode });
     syncWasRunningRef.current = true;
     await refreshSyncStatus();
-  }, [syncMaxNew, refreshSyncStatus, toast]);
+  }, [syncMaxNew, syncFullMode, refreshSyncStatus, toast]);
 
   const cancelSync = useCallback(async () => {
     await invoke("e621_sync_cancel");
@@ -1478,42 +1484,66 @@ if (loadingFeedsRef.current[feedId]) return;
 
   const ensureFavorite = useCallback(async (feedId: number, post: E621Post) => {
     const id = post.id;
+    const isCurrentlyFavorited = post.is_favorited;
+    
     try {
       setFeedActionBusy(prev => ({ ...prev, [id]: true }));
-      if (!downloadedE621Ids.has(id)) {
-        if (!post.file.url) throw new Error("This post has no original file URL (deleted/blocked).");
-        await invoke("add_e621_post", {
-          post: {
-            id: post.id, file_url: post.file.url, file_ext: post.file.ext, file_md5: post.file.md5,
-            rating: post.rating, fav_count: post.fav_count, score_total: post.score.total,
-            created_at: post.created_at, sources: post.sources || [],
-            tags: {
-              general: post.tags.general, species: post.tags.species,
-              character: post.tags.character, artist: post.tags.artist,
-              meta: post.tags.meta, lore: post.tags.lore,
-              copyright: post.tags.copyright,
-            },
-          },
-        });
-        await loadData(false);
-      }
-      await invoke("e621_favorite", { postId: id });
-
-      // Update grid posts
-      if (feedId === -1) {
-        setFeedSearchResults(prev => prev.map(p => p.id === id ? { ...p, is_favorited: true } : p));
+      
+      if (isCurrentlyFavorited) {
+        // Unfavorite
+        await invoke("e621_unfavorite", { postId: id });
+        
+        // Update grid
+        if (feedId === -1) {
+          setFeedSearchResults(prev => prev.map(p => p.id === id ? { ...p, is_favorited: false } : p));
+        } else {
+          setFeedPosts(prev => ({
+            ...prev,
+            [feedId]: (prev[feedId] || []).map((p) => p.id === id ? { ...p, is_favorited: false } : p),
+          }));
+        }
+        
+        // Update detail pane
+        setSelectedFeedPost(prev =>
+          prev && prev.id === id ? { ...prev, is_favorited: false } : prev
+        );
       } else {
-        setFeedPosts(prev => ({
-          ...prev,
-          [feedId]: (prev[feedId] || []).map((p) => p.id === id ? { ...p, is_favorited: true } : p),
-        }));
+        // Favorite (and download if needed)
+        if (!downloadedE621Ids.has(id)) {
+          if (!post.file.url) throw new Error("This post has no original file URL (deleted/blocked).");
+          await invoke("add_e621_post", {
+            post: {
+              id: post.id, file_url: post.file.url, file_ext: post.file.ext, file_md5: post.file.md5,
+              rating: post.rating, fav_count: post.fav_count, score_total: post.score.total,
+              created_at: post.created_at, sources: post.sources || [],
+              tags: {
+                general: post.tags.general, species: post.tags.species,
+                character: post.tags.character, artist: post.tags.artist,
+                meta: post.tags.meta, lore: post.tags.lore,
+                copyright: post.tags.copyright,
+              },
+            },
+          });
+          await loadData(false);
+        }
+        
+        await invoke("e621_favorite", { postId: id });
+
+        // Update grid
+        if (feedId === -1) {
+          setFeedSearchResults(prev => prev.map(p => p.id === id ? { ...p, is_favorited: true } : p));
+        } else {
+          setFeedPosts(prev => ({
+            ...prev,
+            [feedId]: (prev[feedId] || []).map((p) => p.id === id ? { ...p, is_favorited: true } : p),
+          }));
+        }
+
+        // Update detail pane
+        setSelectedFeedPost(prev =>
+          prev && prev.id === id ? { ...prev, is_favorited: true } : prev
+        );
       }
-
-      // ─── FIX: also update the detail-pane post ───
-      setSelectedFeedPost(prev =>
-        prev && prev.id === id ? { ...prev, is_favorited: true } : prev
-      );
-
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), "error");
     } finally {
@@ -2226,9 +2256,16 @@ if (loadingFeedsRef.current[feedId]) return;
           (async () => {
             try {
               if (!document.fullscreenElement) {
+                if (isVideo && detailVideoRef.current) {
+                  savedVideoTimeRef.current = detailVideoRef.current.currentTime;
+                  detailVideoRef.current.pause();
+                }
                 await document.documentElement.requestFullscreen();
                 setViewerOverlay(true);
               } else {
+                if (isVideo && fullscreenVideoRef.current) {
+                  savedVideoTimeRef.current = fullscreenVideoRef.current.currentTime;
+                }
                 await document.exitFullscreen();
                 setViewerOverlay(false);
               }
@@ -2256,10 +2293,17 @@ if (loadingFeedsRef.current[feedId]) return;
           e.preventDefault();
           (async () => {
             try {
+              const isFeedVideo = selectedFeedPost && (selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4');
               if (!document.fullscreenElement) {
+                if (isFeedVideo && feedDetailVideoRef.current) {
+                  savedFeedVideoTimeRef.current = feedDetailVideoRef.current.currentTime;
+                }
                 await document.documentElement.requestFullscreen();
                 setFeedViewerOverlay(true);
               } else {
+                if (isFeedVideo && feedFullscreenVideoRef.current) {
+                  savedFeedVideoTimeRef.current = feedFullscreenVideoRef.current.currentTime;
+                }
                 await document.exitFullscreen();
                 setFeedViewerOverlay(false);
               }
@@ -2311,13 +2355,50 @@ if (loadingFeedsRef.current[feedId]) return;
   useEffect(() => {
     const handler = () => {
       if (!document.fullscreenElement) {
+        if (viewerOverlay && fullscreenVideoRef.current && isVideo) {
+          savedVideoTimeRef.current = fullscreenVideoRef.current.currentTime;
+        }
+        if (feedViewerOverlay && feedFullscreenVideoRef.current) {
+          const isFeedVideo = selectedFeedPost && (selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4');
+          if (isFeedVideo) {
+            savedFeedVideoTimeRef.current = feedFullscreenVideoRef.current.currentTime;
+          }
+        }
+
         if (viewerOverlay) setViewerOverlay(false);
         if (feedViewerOverlay) setFeedViewerOverlay(false);
+
+        // Resume library video after fullscreen exit
+        if (isVideo) {
+          setTimeout(() => {
+            if (detailVideoRef.current) {
+              if (savedVideoTimeRef.current > 0) {
+                detailVideoRef.current.currentTime = savedVideoTimeRef.current;
+                savedVideoTimeRef.current = 0;
+              }
+              detailVideoRef.current.play().catch(() => {});
+            }
+          }, 300);
+        }
+
+        // Resume feed video after fullscreen exit
+        const isFeedVideo = selectedFeedPost && (selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4');
+        if (isFeedVideo) {
+          setTimeout(() => {
+            if (feedDetailVideoRef.current) {
+              if (savedFeedVideoTimeRef.current > 0) {
+                feedDetailVideoRef.current.currentTime = savedFeedVideoTimeRef.current;
+                savedFeedVideoTimeRef.current = 0;
+              }
+              feedDetailVideoRef.current.play().catch(() => {});
+            }
+          }, 300);
+        }
       }
     };
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
-  }, [viewerOverlay, feedViewerOverlay]);
+  }, [viewerOverlay, feedViewerOverlay, isVideo, selectedFeedPost]);
 
   // Persist preferences
   useEffect(() => { try { localStorage.setItem('preferred_sort_order', sortOrder); } catch { /* ignore */ } }, [sortOrder]);
@@ -2394,16 +2475,6 @@ if (loadingFeedsRef.current[feedId]) return;
       .catch(() => { if (!cancelled) setCurrentPostPools([]); });
     return () => { cancelled = true; };
   }, [currentItem?.item_id]);
-
-  useEffect(() => {
-    // Pause previous video before switching
-    if (activeVideoRef.current) {
-      activeVideoRef.current.pause();
-      activeVideoRef.current.currentTime = 0;
-      activeVideoRef.current = null;
-    }
-    setImageLoading(true);
-  }, [currentIndex]);
 
   // Image preloading (removed imageCache from deps to prevent loop)
   const imageCacheRef = useRef<Record<string, boolean>>({});
@@ -3005,15 +3076,23 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               )}
               {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
                 <video
+                  ref={feedFullscreenVideoRef}
                   key={selectedFeedPost.id}
                   src={selectedFeedPost.file.url || selectedFeedPost.sample.url || ''}
                   controls
                   autoPlay
+                  playsInline
                   loop={!waitForVideoEnd || !feedSlideshow}
                   muted={globalMute || autoMuteVideos}
                   className={`w-full h-full object-contain transition-opacity duration-300 ${feedFadeIn ? "opacity-100" : "opacity-0"}`}
                   style={{ pointerEvents: 'none' }}
-                  onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setFeedImageLoading(false); }}
+                  onCanPlay={(e) => {
+                    if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
+                    if (savedFeedVideoTimeRef.current > 0) {
+                      e.currentTarget.currentTime = savedFeedVideoTimeRef.current;
+                    }
+                  }}
+                  onLoadedData={() => setFeedImageLoading(false)}
                   onError={() => setFeedImageLoading(false)}
                   onEnded={() => { if (waitForVideoEnd && feedSlideshow) goToNextFeedPost(); }}
                 />
@@ -3062,7 +3141,14 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     </div>
                   <button onClick={() => setAutoMuteVideos(!autoMuteVideos)} className={`p-1.5 rounded ${autoMuteVideos ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}>{autoMuteVideos ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}</button>
                   <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
-                  <button onClick={async () => { await document.exitFullscreen(); setFeedViewerOverlay(false); }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><Maximize className="w-4 h-4" /></button>
+                  <button onClick={async () => {
+                    const isFeedVideo = selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4';
+                    if (isFeedVideo && feedFullscreenVideoRef.current) {
+                      savedFeedVideoTimeRef.current = feedFullscreenVideoRef.current.currentTime;
+                    }
+                    await document.exitFullscreen();
+                    setFeedViewerOverlay(false);
+                  }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded"><Maximize className="w-4 h-4" /></button>
                   <button
                     onClick={() => ensureFavorite(selectedFeedId ?? -1, selectedFeedPost)}
                     disabled={!!feedActionBusy[selectedFeedPost.id]}
@@ -3102,8 +3188,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               )}
               {isVideo ? (
                 <video
+                  ref={fullscreenVideoRef}
                   key={currentItem.url}
-                  ref={(el) => { activeVideoRef.current = el; }}
                   src={currentItem.url}
                   controls
                   autoPlay
@@ -3111,7 +3197,14 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   muted={globalMute || autoMuteVideos}
                   className={`w-full h-full object-contain transition-opacity duration-300 ${fadeIn ? "opacity-100" : "opacity-0"}`}
                   style={{ pointerEvents: 'none' }}
-                  onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
+                  onCanPlay={(e) => {
+                    if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
+                    if (savedVideoTimeRef.current > 0) {
+                      e.currentTarget.currentTime = savedVideoTimeRef.current;
+                      savedVideoTimeRef.current = 0;
+                    }
+                  }}
+                  onLoadedData={() => setImageLoading(false)}
                   onError={() => setImageLoading(false)}
                   onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
                 />
@@ -3327,15 +3420,24 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     )}
                     {isVideo ? (
                       <video
+                        ref={detailVideoRef}
                         key={currentItem.url}
-                        ref={(el) => { activeVideoRef.current = el; }}
                         src={currentItem.url}
                         controls
                         autoPlay
+                        playsInline
                         loop={!waitForVideoEnd || !isSlideshow}
                         muted={globalMute || autoMuteVideos}
-                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"}`}
-                        onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setImageLoading(false); }}
+                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"} ${viewerOverlay ? 'opacity-0 pointer-events-none' : ''}`}
+                        onCanPlay={(e) => {
+                          if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
+                          if (savedVideoTimeRef.current > 0) {
+                            e.currentTarget.currentTime = savedVideoTimeRef.current;
+                            savedVideoTimeRef.current = 0;
+                            e.currentTarget.play().catch(() => {});
+                          }
+                        }}
+                        onLoadedData={() => setImageLoading(false)}
                         onError={() => setImageLoading(false)}
                         onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
                       />
@@ -3384,8 +3486,19 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     <button onClick={() => setWaitForVideoEnd(!waitForVideoEnd)} className={`p-1.5 rounded transition-colors ${waitForVideoEnd ? 'bg-[#967abc] hover:bg-[#967abc]/80' : 'bg-[#1d1b2d] hover:bg-[#4c4b5a]'}`}><Clock className="w-4 h-4" /></button>
                     <button onClick={async () => {
                       try {
-                        if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); setViewerOverlay(true); }
-                        else { await document.exitFullscreen(); setViewerOverlay(false); }
+                        if (!document.fullscreenElement) {
+                          if (isVideo && detailVideoRef.current) {
+                            savedVideoTimeRef.current = detailVideoRef.current.currentTime;
+                          }
+                          await document.documentElement.requestFullscreen();
+                          setViewerOverlay(true);
+                        } else {
+                          if (isVideo && fullscreenVideoRef.current) {
+                            savedVideoTimeRef.current = fullscreenVideoRef.current.currentTime;
+                          }
+                          await document.exitFullscreen();
+                          setViewerOverlay(false);
+                        }
                       } catch (err) { console.warn("Fullscreen failed:", err); }
                     }} className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"><Maximize className="w-4 h-4" /></button>
                     <button onClick={deleteCurrentItem} className="p-1.5 bg-[#1d1b2d] hover:bg-red-600 rounded text-[#9e98aa] hover:text-white transition-colors"><Trash2 className="w-4 h-4" /></button>
@@ -3774,14 +3887,23 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     )}
                     {selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4' ? (
                       <video
+                        ref={feedDetailVideoRef}
                         key={selectedFeedPost.id}
                         src={selectedFeedPost.file.url || selectedFeedPost.sample.url || ''}
                         controls
                         autoPlay
+                        playsInline
                         loop={!waitForVideoEnd || !feedSlideshow}
                         muted={globalMute || autoMuteVideos}
-                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${feedFadeIn ? "opacity-100" : "opacity-0"}`}
-                        onLoadedData={(e) => { if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0; setFeedImageLoading(false); }}
+                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${feedFadeIn ? "opacity-100" : "opacity-0"} ${feedViewerOverlay ? 'opacity-0 pointer-events-none' : ''}`}
+                        onCanPlay={(e) => {
+                          if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
+                          if (savedFeedVideoTimeRef.current > 0) {
+                            e.currentTarget.currentTime = savedFeedVideoTimeRef.current;
+                            savedFeedVideoTimeRef.current = 0;
+                          }
+                        }}
+                        onLoadedData={() => setFeedImageLoading(false)}
                         onError={() => setFeedImageLoading(false)}
                         onEnded={() => { if (waitForVideoEnd && feedSlideshow) goToNextFeedPost(); }}
                       />
@@ -3834,13 +3956,26 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                       } ${feedActionBusy[selectedFeedPost.id] ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >
                       {feedActionBusy[selectedFeedPost.id] ? <Loader2 className="w-4 h-4 animate-spin" /> : <Star className={`w-4 h-4 ${selectedFeedPost.is_favorited ? 'fill-current' : ''}`} />}
-                      {selectedFeedPost.is_favorited ? 'Saved' : 'Save'}
+                      {selectedFeedPost.is_favorited ? 'Unfavorite' : 'Save'}
                     </button>
                     <button
                       onClick={async () => {
                         try {
-                          if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); setFeedViewerOverlay(true); }
-                          else { await document.exitFullscreen(); setFeedViewerOverlay(false); }
+                          if (!document.fullscreenElement) {
+                            const isFeedVideo = selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4';
+                            if (isFeedVideo && feedDetailVideoRef.current) {
+                              savedFeedVideoTimeRef.current = feedDetailVideoRef.current.currentTime;
+                            }
+                            await document.documentElement.requestFullscreen();
+                            setFeedViewerOverlay(true);
+                          } else {
+                            const isFeedVideo = selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4';
+                            if (isFeedVideo && feedFullscreenVideoRef.current) {
+                              savedFeedVideoTimeRef.current = feedFullscreenVideoRef.current.currentTime;
+                            }
+                            await document.exitFullscreen();
+                            setFeedViewerOverlay(false);
+                          }
                         } catch (err) { console.warn("Fullscreen failed:", err); }
                       }}
                       className="p-1.5 bg-[#1d1b2d] hover:bg-[#4c4b5a] rounded transition-colors"
@@ -3853,9 +3988,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   {/* Info & Tags */}
                   <div className="p-4">
                     {downloadedE621Ids.has(selectedFeedPost.id) && (
-                      <div className="flex items-center gap-2 text-xs mb-4 px-3 py-2 rounded-xl bg-[#1d1b2d] text-[#9e98aa]">
+                      <div className="absolute top-2 left-2 z-10 bg-green-500/80 text-white p-1.5 rounded-full pointer-events-none">
                         <Database className="w-3.5 h-3.5" />
-                        Already in library
                       </div>
                     )}
 
@@ -4404,12 +4538,23 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                     {/* e621 sync */}
                       <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-3 mt-3">
                         <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">Favorites Sync</h4>
-                        <div className="flex gap-2 items-center">
-                          <input type="text" placeholder="Limit (optional)" value={syncMaxNew} onChange={(e) => setSyncMaxNew(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
-                          <button onClick={startSync} disabled={!!syncStatus?.running || !e621CredInfo.has_api_key} className="px-4 py-2 rounded-xl text-sm bg-[#967abc] hover:bg-[#967abc]/80 disabled:opacity-40 disabled:cursor-not-allowed">
-                            {syncStatus?.running ? "Syncing..." : "Start"}
-                          </button>
-                          {syncStatus?.running && <button onClick={cancelSync} className="px-3 py-2 rounded-xl text-sm bg-red-600 hover:bg-red-700">Stop</button>}
+                        <div className="space-y-2">
+                          <div className="flex gap-2 items-center">
+                            <input type="text" placeholder="Limit (optional)" value={syncMaxNew} onChange={(e) => setSyncMaxNew(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
+                            <button onClick={startSync} disabled={!!syncStatus?.running || !e621CredInfo.has_api_key} className="px-4 py-2 rounded-xl text-sm bg-[#967abc] hover:bg-[#967abc]/80 disabled:opacity-40 disabled:cursor-not-allowed">
+                              {syncStatus?.running ? "Syncing..." : "Start"}
+                            </button>
+                            {syncStatus?.running && <button onClick={cancelSync} className="px-3 py-2 rounded-xl text-sm bg-red-600 hover:bg-red-700">Stop</button>}
+                          </div>
+                          <label className="flex items-center gap-2 text-xs text-[#9e98aa] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={syncFullMode}
+                              onChange={(e) => setSyncFullMode(e.target.checked)}
+                              className="w-4 h-4 rounded bg-[#1d1b2d] border-[#4c4b5a] text-[#967abc] focus:ring-[#967abc]"
+                            />
+                            Full sync (don't stop early when catching up)
+                          </label>
                         </div>
                         {syncStatus && (syncStatus.running || syncStatus.scanned_pages > 0) && (
                           <div className="mt-3 text-xs text-[#9e98aa] space-y-0.5">

@@ -817,6 +817,7 @@ pub fn e621_sync_start(
   app: AppHandle,
   state: tauri::State<'_, Arc<Mutex<SyncState>>>,
   max_new_downloads: Option<u32>,
+  force_full_sync: Option<bool>,
 ) -> Result<Status, String> {
   {
     let mut st = state.lock().map_err(|_| "Sync state lock poisoned")?;
@@ -1052,8 +1053,8 @@ pub fn e621_sync_start(
           std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
-        // Early stop: if an entire page was all existing, we've caught up
-        if consecutive_existing >= EARLY_STOP_THRESHOLD {
+        // Early stop: if an entire page was all existing, we've caught up (unless force_full_sync)
+        if !force_full_sync.unwrap_or(false) && consecutive_existing >= EARLY_STOP_THRESHOLD {
           break;
         }
 
