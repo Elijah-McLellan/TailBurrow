@@ -960,6 +960,7 @@ function FavoritesViewerInner() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const suggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isFetchingSuggestionsRef = useRef(false);
   const [sortOrder, setSortOrder] = useState(() => localStorage.getItem('preferred_sort_order') || 'default');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -1627,6 +1628,9 @@ if (loadingFeedsRef.current[feedId]) return;
       setShowSuggestions(false);
       return;
     }
+    // Prevent overlapping requests
+    if (isFetchingSuggestionsRef.current) return;
+    isFetchingSuggestionsRef.current = true;
     try {
       const results = await invoke<{ name: string; tag_type: string; count: number }[]>("search_tags", { prefix, limit: 8 });
       setTagSuggestions(results);
@@ -1635,6 +1639,8 @@ if (loadingFeedsRef.current[feedId]) return;
     } catch {
       setTagSuggestions([]);
       setShowSuggestions(false);
+    } finally {
+      isFetchingSuggestionsRef.current = false;
     }
   }, []);
 
@@ -2911,7 +2917,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                                 } else {
                                   setSearchTags(val);
                                   if (suggestionTimeoutRef.current) clearTimeout(suggestionTimeoutRef.current);
-                                  suggestionTimeoutRef.current = setTimeout(() => fetchTagSuggestions(val.trim()), 200);
+                                  suggestionTimeoutRef.current = setTimeout(() => fetchTagSuggestions(val.trim()), 400);
                                 }
                               }}
                               onKeyDown={(e) => {

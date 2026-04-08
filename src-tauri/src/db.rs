@@ -53,6 +53,10 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
       type   TEXT NOT NULL
     );
 
+    CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+    CREATE INDEX IF NOT EXISTS idx_tags_type ON tags(type);
+    CREATE INDEX IF NOT EXISTS idx_item_tags_tag_id ON item_tags(tag_id);
+
     CREATE TABLE IF NOT EXISTS item_tags (
       item_id INTEGER NOT NULL,
       tag_id  INTEGER NOT NULL,
@@ -132,6 +136,11 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
       );
       "
   ).map_err(|e| e.to_string())?;
+
+  // Ensure tag search indexes exist (migration for existing databases)
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)", []).ok();
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_type ON tags(type)", []).ok();
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_item_tags_tag_id ON item_tags(tag_id)", []).ok();
 
   Ok(())
 }
