@@ -1463,8 +1463,7 @@ if (loadingFeedsRef.current[feedId]) return;
   }, [feedSearchInput, feedSearchResults, selectedFeedId, feedPosts]);
 
   useEffect(() => {
-    // Pause any playing video when switching feed posts
-    document.querySelectorAll<HTMLVideoElement>('video[autoplay]').forEach(v => v.pause());
+    savedFeedVideoTimeRef.current = 0;
     setFeedImageLoading(true);
     setFeedFadeIn(true);
   }, [selectedFeedPost?.id]);
@@ -2311,6 +2310,7 @@ if (loadingFeedsRef.current[feedId]) return;
               if (!document.fullscreenElement) {
                 if (isFeedVideo && feedDetailVideoRef.current) {
                   savedFeedVideoTimeRef.current = feedDetailVideoRef.current.currentTime;
+                  feedDetailVideoRef.current.pause();
                 }
                 await document.documentElement.requestFullscreen();
                 setFeedViewerOverlay(true);
@@ -3100,10 +3100,11 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   muted={globalMute || autoMuteVideos}
                   className={`w-full h-full object-contain transition-opacity duration-300 ${feedFadeIn ? "opacity-100" : "opacity-0"}`}
                   style={{ pointerEvents: 'none' }}
-                  onCanPlay={(e) => {
+                  onLoadedMetadata={(e) => {
                     if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
                     if (savedFeedVideoTimeRef.current > 0) {
                       e.currentTarget.currentTime = savedFeedVideoTimeRef.current;
+                      savedFeedVideoTimeRef.current = 0;
                     }
                   }}
                   onLoadedData={() => setFeedImageLoading(false)}
@@ -3912,6 +3913,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${feedFadeIn ? "opacity-100" : "opacity-0"} ${feedViewerOverlay ? 'opacity-0 pointer-events-none' : ''}`}
                         onCanPlay={(e) => {
                           if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
+                        }}
+                        onLoadedMetadata={(e) => {
                           if (savedFeedVideoTimeRef.current > 0) {
                             e.currentTarget.currentTime = savedFeedVideoTimeRef.current;
                             savedFeedVideoTimeRef.current = 0;
@@ -3979,6 +3982,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                             const isFeedVideo = selectedFeedPost.file.ext === 'webm' || selectedFeedPost.file.ext === 'mp4';
                             if (isFeedVideo && feedDetailVideoRef.current) {
                               savedFeedVideoTimeRef.current = feedDetailVideoRef.current.currentTime;
+                              feedDetailVideoRef.current.pause();
                             }
                             await document.documentElement.requestFullscreen();
                             setFeedViewerOverlay(true);
