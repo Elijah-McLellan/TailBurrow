@@ -1471,16 +1471,24 @@ if (loadingFeedsRef.current[feedId]) return;
 
   const goToNextFeedPost = useCallback(() => {
     if (currentFeedPosts.length === 0) return;
-    const nextIndex = (feedPostIndex + 1) % currentFeedPosts.length;
-    setFeedPostIndex(nextIndex);
-    setSelectedFeedPost(currentFeedPosts[nextIndex]);
+    setFeedFadeIn(false);
+    setTimeout(() => {
+      const nextIndex = (feedPostIndex + 1) % currentFeedPosts.length;
+      setFeedPostIndex(nextIndex);
+      setSelectedFeedPost(currentFeedPosts[nextIndex]);
+      requestAnimationFrame(() => setFeedFadeIn(true));
+    }, FADE_DURATION_MS);
   }, [currentFeedPosts, feedPostIndex]);
 
   const goToPrevFeedPost = useCallback(() => {
     if (currentFeedPosts.length === 0) return;
-    const prevIndex = (feedPostIndex - 1 + currentFeedPosts.length) % currentFeedPosts.length;
-    setFeedPostIndex(prevIndex);
-    setSelectedFeedPost(currentFeedPosts[prevIndex]);
+    setFeedFadeIn(false);
+    setTimeout(() => {
+      const prevIndex = (feedPostIndex - 1 + currentFeedPosts.length) % currentFeedPosts.length;
+      setFeedPostIndex(prevIndex);
+      setSelectedFeedPost(currentFeedPosts[prevIndex]);
+      requestAnimationFrame(() => setFeedFadeIn(true));
+    }, FADE_DURATION_MS);
   }, [currentFeedPosts, feedPostIndex]);
 
   const ensureFavorite = useCallback(async (feedId: number, post: E621Post) => {
@@ -3070,8 +3078,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           onTouchStart={pokeHud}
         >
           <div className="relative w-full h-full">
-            <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={goToPrevFeedPost} />
-            <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={goToNextFeedPost} />
+            <div className="absolute inset-y-0 left-0 w-1/2 z-10 cursor-pointer" onClick={goToPrevFeedPost} />
+            <div className="absolute inset-y-0 right-0 w-1/2 z-10 cursor-pointer" onClick={goToNextFeedPost} />
 
             <div className="w-full h-full flex items-center justify-center relative">
               {selectedFeedPost.file.ext !== 'webm' && selectedFeedPost.file.ext !== 'mp4' && (
@@ -3181,8 +3189,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         >
           <div className="relative w-full h-full">
             {/* Click zones for navigation */}
-            <div className="absolute inset-y-0 left-0 w-1/2 z-0 cursor-pointer" onClick={() => goToPrev(true)} />
-            <div className="absolute inset-y-0 right-0 w-1/2 z-0 cursor-pointer" onClick={() => goToNext(true)} />
+            <div className="absolute inset-y-0 left-0 w-1/2 z-10 cursor-pointer" onClick={() => goToPrev(true)} />
+            <div className="absolute inset-y-0 right-0 w-1/2 z-10 cursor-pointer" onClick={() => goToNext(true)} />
 
             {/* Media */}
             <div className="w-full h-full flex items-center justify-center relative">
