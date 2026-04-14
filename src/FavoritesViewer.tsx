@@ -2126,10 +2126,11 @@ if (loadingFeedsRef.current[feedId]) return;
 
       setInitialLoading(true);
       try {
-        await refreshLibraryRoot();
-        
-        // Only try to load data if library root is actually set
-        if (libraryRoot) {
+        const cfg = await invoke<AppConfig>("get_config");
+        const root = cfg.library_root || "";
+        setLibraryRoot(root);
+
+        if (root) {
           await loadData(false);
         }
         
@@ -2848,6 +2849,133 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           )}
         </div>
       )}
+
+      {/* Welcome Screen - First Time Setup */}
+      {lockChecked && !isLocked && !libraryRoot && !initialLoading && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#0f0f17] text-white">
+          <div className="max-w-2xl px-8 text-center">
+            <div className="w-24 h-24 mx-auto mb-8 rounded-3xl bg-gradient-to-br from-[#967abc] to-[#6b4d8a] flex items-center justify-center">
+              <Database className="w-12 h-12 text-white" />
+            </div>
+            <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-[#967abc] to-[#c9a3e8] bg-clip-text text-transparent">
+              Welcome to TailBurrow
+            </h1>
+            <p className="text-lg text-[#9e98aa] mb-8 leading-relaxed">
+              Your personal e621, FurAffinity, and local media archive. Let's get started by setting up your library.
+            </p>
+            <div className="bg-[#161621] rounded-2xl border border-[#1d1b2d] p-8 mb-8 text-left">
+              <h2 className="text-xl font-semibold mb-6 text-[#967abc]">Quick Setup</h2>
+              <div className="space-y-4">
+                <div className="flex items-start gap-4">
+                  <div className="w-8 h-8 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <span className="text-[#967abc] font-bold">1</span>
+                  </div>
+                  <div>
+                    <h3 className="font-medium mb-1">Choose a Library Folder</h3>
+                    <p className="text-sm text-[#9e98aa]">Select an empty folder where TailBurrow will store your downloads and database.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4">
+                  <div className="w-8 h-8 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <span className="text-[#967abc] font-bold">2</span>
+                  </div>
+                  <div>
+                    <h3 className="font-medium mb-1">Add e621 Credentials</h3>
+                    <p className="text-sm text-[#9e98aa]">Required for downloading favorites, searching feeds, and accessing the API.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-4">
+                  <div className="w-8 h-8 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <span className="text-[#967abc] font-bold">3</span>
+                  </div>
+                  <div>
+                    <h3 className="font-medium mb-1">Start Archiving</h3>
+                    <p className="text-sm text-[#9e98aa]">Sync your favorites, browse feeds, or import local files.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={changeLibraryRoot}
+              className="px-8 py-4 rounded-xl bg-[#967abc] hover:bg-[#967abc]/80 text-white font-semibold text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-[#967abc]/50"
+            >
+              Choose Library Folder
+            </button>
+            <p className="mt-8 text-xs text-[#4c4b5a]">TailBurrow v{APP_VERSION}</p>
+          </div>
+        </div>
+      )}
+
+      {/* e621 Credentials Required Screen */}
+      {lockChecked && !isLocked && !initialLoading && libraryRoot && !e621CredInfo.has_api_key && !showSettings && (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-[#0f0f17] text-white">
+          <div className="max-w-xl px-8">
+            <div className="bg-[#161621] rounded-2xl border border-[#1d1b2d] p-8">
+              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-[#967abc]/20 flex items-center justify-center">
+                <Shield className="w-8 h-8 text-[#967abc]" />
+              </div>
+              <h2 className="text-2xl font-bold mb-4 text-center">e621 Credentials Required</h2>
+              <p className="text-[#9e98aa] mb-6 text-center">
+                TailBurrow needs your e621 API credentials to download favorites, search feeds, and access the full catalog.
+              </p>
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-[#9e98aa]">Username</label>
+                  <input
+                    type="text"
+                    value={apiUsername}
+                    onChange={(e) => setApiUsername(e.target.value)}
+                    placeholder="Your e621 username"
+                    className="w-full px-4 py-3 rounded-xl bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] focus:outline-none text-white placeholder-[#4c4b5a]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-[#9e98aa]">API Key</label>
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Your e621 API key"
+                    className="w-full px-4 py-3 rounded-xl bg-[#1c1b26] border border-[#1d1b2d] focus:border-[#967abc] focus:outline-none text-white placeholder-[#4c4b5a]"
+                  />
+                </div>
+              </div>
+              <div className="bg-[#1c1b26] rounded-xl p-4 mb-6 border border-[#1d1b2d]">
+                <p className="text-xs text-[#9e98aa] mb-2">
+                  <strong className="text-white">How to get your API key:</strong>
+                </p>
+                <ol className="text-xs text-[#9e98aa] space-y-1 list-decimal list-inside">
+                  <li>Log in to <button onClick={() => openExternalUrl("https://e621.net")} className="text-[#967abc] hover:underline">e621.net</button></li>
+                  <li>Go to Account → Manage API Access</li>
+                  <li>Create a new API key</li>
+                  <li>Copy and paste it above</li>
+                </ol>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowSettings(true);
+                    setSettingsTab('credentials');
+                  }}
+                  className="flex-1 px-4 py-3 rounded-xl bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa] transition-colors text-sm"
+                >
+                  Skip for Now
+                </button>
+                <button
+                  onClick={async () => {
+                    await saveE621Credentials();
+                  }}
+                  disabled={!apiUsername.trim() || !apiKey.trim()}
+                  className="flex-1 px-4 py-3 rounded-xl bg-[#967abc] hover:bg-[#967abc]/80 text-white font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Save & Continue
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className={`border-b flex-shrink-0 border-[#1d1b2d] bg-[#161621]`}>
         <div className={"px-4"}>
@@ -3083,8 +3211,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
           onTouchStart={pokeHud}
         >
           <div className="relative w-full h-full">
-            <div className="absolute inset-y-0 left-0 w-1/2 z-10 cursor-pointer" onClick={goToPrevFeedPost} />
-            <div className="absolute inset-y-0 right-0 w-1/2 z-10 cursor-pointer" onClick={goToNextFeedPost} />
+            <div className="absolute inset-y-0 left-0 w-1/5 z-10 cursor-pointer" onClick={goToPrevFeedPost} />
+            <div className="absolute inset-y-0 right-0 w-1/5 z-10 cursor-pointer" onClick={goToNextFeedPost} />
 
             <div className="w-full h-full flex items-center justify-center relative">
               {selectedFeedPost.file.ext !== 'webm' && selectedFeedPost.file.ext !== 'mp4' && (
@@ -3195,8 +3323,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
         >
           <div className="relative w-full h-full">
             {/* Click zones for navigation */}
-            <div className="absolute inset-y-0 left-0 w-1/2 z-10 cursor-pointer" onClick={() => goToPrev(true)} />
-            <div className="absolute inset-y-0 right-0 w-1/2 z-10 cursor-pointer" onClick={() => goToNext(true)} />
+            <div className="absolute inset-y-0 left-0 w-1/5 z-10 cursor-pointer" onClick={() => goToPrev(true)} />
+            <div className="absolute inset-y-0 right-0 w-1/5 z-10 cursor-pointer" onClick={() => goToNext(true)} />
 
             {/* Media */}
             <div className="w-full h-full flex items-center justify-center relative">
@@ -3447,9 +3575,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         autoPlay
                         playsInline
                         loop={!waitForVideoEnd || !isSlideshow}
-                        muted={globalMute || autoMuteVideos}
+                        muted={globalMute || autoMuteVideos || viewerOverlay}
                         className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${fadeIn ? "opacity-100" : "opacity-0"} ${viewerOverlay ? 'opacity-0 pointer-events-none' : ''}`}
                         onCanPlay={(e) => {
+                          if (viewerOverlay) return;
                           if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
                           if (savedVideoTimeRef.current > 0) {
                             e.currentTarget.currentTime = savedVideoTimeRef.current;
@@ -3459,7 +3588,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         }}
                         onLoadedData={() => setImageLoading(false)}
                         onError={() => setImageLoading(false)}
-                        onEnded={() => { if (waitForVideoEnd && isSlideshow) goToNext(); }}
+                        onEnded={() => { if (!viewerOverlay && waitForVideoEnd && isSlideshow) goToNext(); }}
                       />
                     ) : (
                       <img
@@ -3914,9 +4043,10 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         autoPlay
                         playsInline
                         loop={!waitForVideoEnd || !feedSlideshow}
-                        muted={globalMute || autoMuteVideos}
+                        muted={globalMute || autoMuteVideos || feedViewerOverlay}
                         className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${feedFadeIn ? "opacity-100" : "opacity-0"} ${feedViewerOverlay ? 'opacity-0 pointer-events-none' : ''}`}
                         onCanPlay={(e) => {
+                          if (feedViewerOverlay) return;
                           if (!globalMute && !autoMuteVideos) e.currentTarget.volume = 1.0;
                         }}
                         onLoadedMetadata={(e) => {
@@ -3927,7 +4057,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                         }}
                         onLoadedData={() => setFeedImageLoading(false)}
                         onError={() => setFeedImageLoading(false)}
-                        onEnded={() => { if (waitForVideoEnd && feedSlideshow) goToNextFeedPost(); }}
+                        onEnded={() => { if (!feedViewerOverlay && waitForVideoEnd && feedSlideshow) goToNextFeedPost(); }}
                       />
                     ) : (
                       <img
