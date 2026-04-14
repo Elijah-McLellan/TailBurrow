@@ -518,6 +518,7 @@ async fn run_sync_inner(
 
             let now = chrono::Local::now().to_rfc3339();
             let file_rel = format!("media/{}", filename);
+            crate::commands::generate_and_save_thumb(&root, &file_rel);
 
             let mut conn_mut = db::open(&db_path).map_err(|e| e.to_string())?;
             let tx = conn_mut.transaction().map_err(|e| e.to_string())?;

@@ -43,19 +43,11 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
       UNIQUE(source, source_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_items_added_at ON items(added_at);
-    CREATE INDEX IF NOT EXISTS idx_items_trashed_at ON items(trashed_at);
-    CREATE INDEX IF NOT EXISTS idx_items_md5_lookup ON items(md5) WHERE md5 IS NOT NULL;
-
     CREATE TABLE IF NOT EXISTS tags (
       tag_id INTEGER PRIMARY KEY,
       name   TEXT NOT NULL UNIQUE,
       type   TEXT NOT NULL
     );
-
-    CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
-    CREATE INDEX IF NOT EXISTS idx_tags_type ON tags(type);
-    CREATE INDEX IF NOT EXISTS idx_item_tags_tag_id ON item_tags(tag_id);
 
     CREATE TABLE IF NOT EXISTS item_tags (
       item_id INTEGER NOT NULL,
@@ -78,12 +70,11 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
       FOREIGN KEY (source_row_id) REFERENCES sources(source_row_id) ON DELETE CASCADE
     );
 
-    -- fts_items: reserved for future full-text search
-
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
     CREATE TABLE IF NOT EXISTS unavailable_posts (
       row_id       INTEGER PRIMARY KEY,
       source       TEXT NOT NULL,
@@ -93,54 +84,28 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
       sources_json TEXT NOT NULL,
       UNIQUE(source, source_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_unavailable_seen_at ON unavailable_posts(seen_at);
 
+    CREATE TABLE IF NOT EXISTS post_pools (
+      source_id TEXT NOT NULL,
+      pool_id   INTEGER NOT NULL,
+      PRIMARY KEY (source_id, pool_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS pool_scan_log (
+      source_id TEXT PRIMARY KEY
+    );
     "#,
   )
   .map_err(|e| e.to_string())?;
 
-  // Migration: Copy any data from legacy file_md5 column into md5 column
-  let has_file_md5: u32 = conn.query_row(
-      "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='file_md5'",
-      [],
-      |row| row.get(0),
-  ).unwrap_or(0);
-
-  if has_file_md5 > 0 {
-      // Move any data that was stored in the wrong column
-      conn.execute(
-          "UPDATE items SET md5 = file_md5 WHERE file_md5 IS NOT NULL AND (md5 IS NULL OR md5 = '')",
-          [],
-      ).ok();
-  }
-
-  // Migration: Replace unique MD5 index with non-unique
-  conn.execute("DROP INDEX IF EXISTS idx_items_md5", []).ok();
-
-  // Ensure the non-unique lookup index exists
-  conn.execute(
-      "CREATE INDEX IF NOT EXISTS idx_items_md5_lookup ON items(md5) WHERE md5 IS NOT NULL",
-      [],
-  ).ok();
-
-  conn.execute_batch(
-      "
-      CREATE TABLE IF NOT EXISTS post_pools (
-          source_id TEXT NOT NULL,
-          pool_id   INTEGER NOT NULL,
-          PRIMARY KEY (source_id, pool_id)
-      );
-
-      CREATE TABLE IF NOT EXISTS pool_scan_log (
-          source_id TEXT PRIMARY KEY
-      );
-      "
-  ).map_err(|e| e.to_string())?;
-
-  // Ensure tag search indexes exist (migration for existing databases)
+  //Create all indexes AFTER all tables exist
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_items_added_at ON items(added_at)", []).ok();
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_items_trashed_at ON items(trashed_at)", []).ok();
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_items_md5_lookup ON items(md5) WHERE md5 IS NOT NULL", []).ok();
   conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)", []).ok();
   conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_type ON tags(type)", []).ok();
   conn.execute("CREATE INDEX IF NOT EXISTS idx_item_tags_tag_id ON item_tags(tag_id)", []).ok();
+  conn.execute("CREATE INDEX IF NOT EXISTS idx_unavailable_seen_at ON unavailable_posts(seen_at)", []).ok();
 
   Ok(())
 }

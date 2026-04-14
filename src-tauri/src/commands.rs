@@ -1200,7 +1200,20 @@ pub fn get_trashed_items(app: tauri::AppHandle) -> Result<Vec<ItemDto>, String> 
 
 #[tauri::command]
 pub fn restore_item(app: tauri::AppHandle, item_id: i64) -> Result<(), String> {
+    let root = get_root(&app)?;
     with_db(&app, |conn| {
+        // Check the file still exists on disk before restoring
+        let file_rel: String = conn.query_row(
+            "SELECT file_rel FROM items WHERE item_id = ?",
+            [item_id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        let file_path = root.join(&file_rel);
+        if !file_path.exists() {
+            return Err(format!("File no longer exists on disk: {}", file_rel));
+        }
+
         conn.execute(
             "UPDATE items SET trashed_at = NULL WHERE item_id = ?",
             [item_id]
@@ -1225,11 +1238,13 @@ pub fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
         let cache_dir = root.join(".cache").join("thumbs");
 
         for rel_path in &files_to_delete {
+            // Delete the actual file
             let abs_path = root.join(rel_path);
             if abs_path.exists() {
                 let _ = std::fs::remove_file(abs_path);
             }
 
+            // Delete the thumbnail (using the same hash method as ensure_thumbnail)
             let name_hash = format!("{:x}", md5::compute(rel_path.as_bytes()));
             let thumb_path = cache_dir.join(format!("{}.jpg", name_hash));
             
@@ -2407,7 +2422,6 @@ pub async fn import_local_files(
     Ok(imported)
 }
 
-// Prune items trashed more than 30 days ago
 pub fn prune_expired_trash(app: &tauri::AppHandle) -> Result<(), String> {
     let root = match get_root(app) {
         Ok(r) => r,
@@ -2417,9 +2431,6 @@ pub fn prune_expired_trash(app: &tauri::AppHandle) -> Result<(), String> {
     let conn = db::open(&library::db_path(&root)).map_err(|e| e.to_string())?;
 
     // 1. Find expired files
-    // SQL: Select items trashed > 30 days ago
-    // We use SQLite's datetime functions. 
-    // 'now' is UTC. 'trashed_at' is stored as ISO8601 string.
     let mut stmt = conn.prepare(
         "SELECT file_rel FROM items WHERE trashed_at < datetime('now', '-30 days') AND trashed_at IS NOT NULL"
     ).map_err(|e| e.to_string())?;
@@ -2429,11 +2440,22 @@ pub fn prune_expired_trash(app: &tauri::AppHandle) -> Result<(), String> {
         .filter_map(Result::ok)
         .collect();
 
-    // 2. Delete files from disk
-    for rel_path in files_to_delete {
+    let cache_dir = root.join(".cache").join("thumbs");
+
+    // 2. Delete files AND thumbnails from disk
+    for rel_path in &files_to_delete {
+        // Delete the actual file
         let abs_path = root.join(rel_path);
         if abs_path.exists() {
             let _ = std::fs::remove_file(abs_path);
+        }
+
+        // Delete the thumbnail
+        let name_hash = format!("{:x}", md5::compute(rel_path.as_bytes()));
+        let thumb_path = cache_dir.join(format!("{}.jpg", name_hash));
+        
+        if thumb_path.exists() {
+            let _ = std::fs::remove_file(thumb_path);
         }
     }
 
@@ -2713,7 +2735,7 @@ pub fn maintenance_start_deleted_check(
                 let mut st = state2.deleted_check.lock().map_err(|_| "Lock poisoned")?;
                 st.running = false;
                 st.current = total;
-                st.total = deleted_e621_ids.len() as u32;
+                st.total = total;
 
                 let mut parts = vec![
                     format!("{} deleted on e621, {} in library", deleted_e621_ids.len(), in_library.len()),

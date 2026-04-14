@@ -2126,8 +2126,13 @@ if (loadingFeedsRef.current[feedId]) return;
 
       setInitialLoading(true);
       try {
-        await loadData(false);
         await refreshLibraryRoot();
+        
+        // Only try to load data if library root is actually set
+        if (libraryRoot) {
+          await loadData(false);
+        }
+        
         loadFeeds();
         await refreshE621CredInfo();
         await refreshFaCreds();
@@ -4555,7 +4560,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                   <>
                     {/* e621 sync */}
                       <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-3 mt-3">
-                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">Favorites Sync</h4>
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">e621 Sync</h4>
                         <div className="space-y-2">
                           <div className="flex gap-2 items-center">
                             <input type="text" placeholder="Limit (optional)" value={syncMaxNew} onChange={(e) => setSyncMaxNew(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
@@ -4587,7 +4592,7 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
 
                       {/* FA sync */}
                       <div className="rounded-xl border border-[#1d1b2d] bg-[#1c1b26] p-3 mt-3">
-                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">Favorites Sync</h4>
+                        <h4 className="text-xs font-semibold uppercase tracking-wider text-[#9e98aa] mb-2">FurAffinity Sync</h4>
                         <div className="flex gap-2 items-center">
                           <input type="text" placeholder="Limit (optional)" value={faLimit} onChange={(e) => setFaLimit(e.target.value)} className="flex-1 px-3 py-2 rounded-xl text-sm focus:outline-none bg-[#0f0f17] border border-[#1d1b2d] focus:border-[#967abc]" />
                           <button onClick={startFaSync} disabled={faStatus?.running || (!faCredsSet && !isEditingFA)} className="px-4 py-2 rounded-xl text-sm bg-[#967abc] hover:bg-[#967abc]/80 disabled:opacity-40 disabled:cursor-not-allowed">
