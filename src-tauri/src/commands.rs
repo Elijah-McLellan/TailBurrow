@@ -395,7 +395,17 @@ pub fn set_library_root(app: AppHandle, library_root: String) -> Result<Status, 
     return Err("Selected library root is not a directory".into());
   }
 
+  // Test write permission
+  let test_file = root.join(".tailburrow_write_test");
+  if let Err(e) = std::fs::write(&test_file, b"test") {
+    return Err(format!("Cannot write to selected directory: {}", e));
+  }
+  let _ = std::fs::remove_file(&test_file);
+
   library::ensure_layout(&root)?;
+
+  // Initialize secrets inside the library folder
+  crate::secrets::init(root.clone());
 
   let pool = app.state::<db::DbPool>();
   pool.set_path(library::db_path(&root))?;

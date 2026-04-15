@@ -2229,6 +2229,16 @@ if (loadingFeedsRef.current[feedId]) return;
           setViewerOverlay(false);
           return;
         }
+        if (feedViewerOverlay) {
+          if (document.fullscreenElement) document.exitFullscreen();
+          setFeedViewerOverlay(false);
+          return;
+        }
+        if (activeTab === 'feeds' && feedDetailOpen) {
+          setFeedDetailOpen(false);
+          setSelectedFeedPost(null);
+          return;
+        }
         if (activeTab === 'comics' && selectedPool) { closePool(); return; }
         if (showBulkTagModal) { setShowBulkTagModal(false); return; }
         if (selectedItemIds.size > 0) { deselectAll(); return; }
@@ -2249,7 +2259,7 @@ if (loadingFeedsRef.current[feedId]) return;
         }
       }
 
-      if (key === "s") { e.preventDefault(); setShowSettings(prev => !prev); }
+      if (key === "s" && activeTab !== "feeds") { e.preventDefault(); setShowSettings(prev => !prev); }
       // Bulk select all: Ctrl+A in library
       if (activeTab === 'viewer' && key === "a" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -4699,15 +4709,24 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                             </button>
                             {syncStatus?.running && <button onClick={cancelSync} className="px-3 py-2 rounded-xl text-sm bg-red-600 hover:bg-red-700">Stop</button>}
                           </div>
-                          <label className="flex items-center gap-2 text-xs text-[#9e98aa] cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={syncFullMode}
-                              onChange={(e) => setSyncFullMode(e.target.checked)}
-                              className="w-4 h-4 rounded bg-[#1d1b2d] border-[#4c4b5a] text-[#967abc] focus:ring-[#967abc]"
-                            />
-                            Full sync (don't stop early when catching up)
-                          </label>
+                        <label className="flex items-center gap-2 text-xs text-[#9e98aa] cursor-pointer select-none">
+                          <button
+                            type="button"
+                            onClick={() => setSyncFullMode(!syncFullMode)}
+                            className={`w-4 h-4 rounded flex items-center justify-center border transition-colors ${
+                              syncFullMode
+                                ? 'bg-[#967abc] border-[#967abc]'
+                                : 'bg-[#1c1b26] border-[#4c4b5a] hover:border-[#967abc]'
+                            }`}
+                          >
+                            {syncFullMode && (
+                              <svg className="w-3 h-3 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            )}
+                          </button>
+                          Full sync (don't stop early when catching up)
+                        </label>
                         </div>
                         {syncStatus && (syncStatus.running || syncStatus.scanned_pages > 0) && (
                           <div className="mt-3 text-xs text-[#9e98aa] space-y-0.5">

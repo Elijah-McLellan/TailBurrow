@@ -1,15 +1,17 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-static SECRETS_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+static SECRETS_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-pub fn init(config_dir: PathBuf) {
-    let path = config_dir.join("secrets.json");
-    *SECRETS_PATH.lock().unwrap() = Some(path);
+/// Initialize secrets storage — call with the library root path
+pub fn init(library_root: PathBuf) {
+    let dir = library_root.join(".cache");
+    let _ = std::fs::create_dir_all(&dir);
+    *SECRETS_DIR.lock().unwrap() = Some(dir);
 }
 
-fn secrets_path() -> Result<PathBuf, String> {
-    SECRETS_PATH
+fn secrets_file() -> Result<PathBuf, String> {
+    SECRETS_DIR
         .lock()
         .map_err(|e| e.to_string())?
         .clone()
@@ -17,7 +19,7 @@ fn secrets_path() -> Result<PathBuf, String> {
 }
 
 fn load_all() -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let path = secrets_path()?;
+    let path = secrets_file()?.join("secrets.json");
     if !path.exists() {
         return Ok(serde_json::Map::new());
     }
@@ -30,12 +32,11 @@ fn load_all() -> Result<serde_json::Map<String, serde_json::Value>, String> {
 }
 
 fn save_all(map: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
-    let path = secrets_path()?;
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
+    let dir = secrets_file()?;
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     }
+    let path = dir.join("secrets.json");
     let json = serde_json::to_string_pretty(&serde_json::Value::Object(map.clone()))
         .map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())?;
@@ -50,8 +51,7 @@ pub fn set_secret(key: &str, value: &str) -> Result<(), String> {
 
 pub fn get_secret(key: &str) -> Result<Option<String>, String> {
     let map = load_all()?;
-    let result = map.get(key).and_then(|v| v.as_str()).map(|s| s.to_string());
-    Ok(result)
+    Ok(map.get(key).and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
 pub fn delete_secret(key: &str) -> Result<(), String> {

@@ -19,17 +19,21 @@ pub fn run() {
     .manage(crate::fa::FAState::new())
     .manage(crate::db::DbPool::new())
     .setup(|app| {
-      let config_dir = app.path().app_config_dir().expect("Failed to get config dir");
-      crate::secrets::init(config_dir);
-
       // Load DB if library root is already set
       if let Ok(cfg) = crate::config::load_config(&app.handle()) {
           if let Some(root) = cfg.library_root {
               let root_path = std::path::PathBuf::from(&root);
               if root_path.exists() {
+                  // Initialize secrets inside the library folder
+                  crate::secrets::init(root_path.clone());
+
                   let pool = app.state::<crate::db::DbPool>();
                   if let Err(e) = pool.set_path(crate::library::db_path(&root_path)) {
                       eprintln!("Failed to load database: {}", e);
+                      if let Ok(mut cfg2) = crate::config::load_config(&app.handle()) {
+                          cfg2.library_root = None;
+                          let _ = crate::config::save_config(&app.handle(), &cfg2);
+                      }
                   }
 
                   // Allow filesystem access for existing library
