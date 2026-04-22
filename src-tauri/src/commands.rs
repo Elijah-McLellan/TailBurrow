@@ -2040,7 +2040,7 @@ pub async fn get_pool_posts(app: AppHandle, pool_id: i64) -> Result<Vec<PoolPost
     let resp = client
         .get(format!("https://e621.net/pools/{}.json", pool_id))
         .basic_auth(&username, Some(&api_key))
-        .header("User-Agent", "TailBurrow/0.2.5 (pools)")
+        .header("User-Agent", "TailBurrow/0.3.2 (pools)")
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -2084,7 +2084,7 @@ pub async fn get_pool_posts(app: AppHandle, pool_id: i64) -> Result<Vec<PoolPost
         let resp = client
             .get("https://e621.net/posts.json")
             .basic_auth(&username, Some(&api_key))
-            .header("User-Agent", "TailBurrow/0.2.5 (pools)")
+            .header("User-Agent", "TailBurrow/0.3.2 (pools)")
             .query(&[("tags", format!("id:{}", ids_param)), ("limit", "100".to_string())])
             .send()
             .await;
@@ -3639,4 +3639,23 @@ pub fn get_post_pools(app: AppHandle, source_id: String) -> Result<Vec<PoolInfo>
         .collect();
 
     Ok(result)
+}
+
+#[tauri::command]
+pub fn load_app_settings(app: AppHandle) -> Result<String, String> {
+    let root = get_root(&app)?;
+    let path = root.join(".cache").join("settings.json");
+    if !path.exists() {
+        return Ok("{}".to_string());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_app_settings(app: AppHandle, json: String) -> Result<(), String> {
+    let root = get_root(&app)?;
+    let dir = root.join(".cache");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+    std::fs::write(&path, json).map_err(|e| e.to_string())
 }

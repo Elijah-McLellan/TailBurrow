@@ -122,6 +122,8 @@ pub fn run() {
       commands::e621_unfavorite,
       commands::search_tags,
       commands::get_post_pools,
+      commands::load_app_settings,
+      commands::save_app_settings,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

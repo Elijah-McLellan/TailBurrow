@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -9,19 +9,8 @@ pub struct AppConfig {
 
 /// Where to store the pointer file that tells us where the library is.
 /// Tries next to the executable first, falls back to AppData.
-fn pointer_path(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.exists() {
-                let test = dir.join(".tb_write_test");
-                if fs::write(&test, b"").is_ok() {
-                    let _ = fs::remove_file(&test);
-                    return Ok(dir.join(".tailburrow-root"));
-                }
-            }
-        }
-    }
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+fn pointer_path(_app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join("tailburrow");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join(".tailburrow-root"))
 }

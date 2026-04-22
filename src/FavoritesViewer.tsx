@@ -11,6 +11,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import Masonry from "react-masonry-css";
+import iconUrl from './tauri.svg';
 
 const APP_VERSION = "0.3.2";
 const TOAST_DURATION_MS = 4000;
@@ -936,6 +937,28 @@ function FavoritesViewerInner() {
   type ConfirmOpts = { title: string; message: string; okLabel?: string; cancelLabel?: string; onConfirm: () => void };
   const [confirmModal, setConfirmModal] = useState<ConfirmOpts | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  
+  const persistSettings = useCallback(async () => {
+    try {
+      const settings: Record<string, string> = {};
+      const keys = [
+        "grid_columns",
+        "preferred_sort_order",
+        "items_per_page",
+        "blacklist_tags",
+        "feed_detail_width",
+        "library_detail_width",
+        "e621_feeds",
+      ];
+      keys.forEach(key => {
+        const val = localStorage.getItem(key);
+        if (val !== null) settings[key] = val;
+      });
+      await invoke("save_app_settings", { json: JSON.stringify(settings) });
+    } catch (e) {
+      console.warn("Failed to persist settings:", e);
+    }
+  }, []);
 
   const dismissToast = useCallback((id: number) => {
     setToasts(prev => prev.filter(t => t.id !== id));
@@ -962,6 +985,7 @@ function FavoritesViewerInner() {
   const suggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isFetchingSuggestionsRef = useRef(false);
   const [sortOrder, setSortOrder] = useState(() => localStorage.getItem('preferred_sort_order') || 'default');
+  useEffect(() => { persistSettings(); }, [sortOrder]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [fadeIn, setFadeIn] = useState(true);
@@ -1006,6 +1030,7 @@ function FavoritesViewerInner() {
   const [feedDetailWidth, setFeedDetailWidth] = useState(() =>
     Number(localStorage.getItem('feed_detail_width') || 500)
   );
+  useEffect(() => { persistSettings(); }, [feedDetailWidth]);
   const feedsContainerRef = useRef<HTMLDivElement>(null);
   const [feedDetailOpen, setFeedDetailOpen] = useState(false);
   const [feedSlideshow, setFeedSlideshow] = useState(false);
@@ -1053,6 +1078,7 @@ function FavoritesViewerInner() {
   const [hasMoreItems, setHasMoreItems] = useState(true);
   const [totalDatabaseItems, setTotalDatabaseItems] = useState(0);
   const [itemsPerPage, setItemsPerPage] = useState(() => Number(localStorage.getItem('items_per_page') || 100));
+  useEffect(() => { persistSettings(); }, [itemsPerPage]);
   const loadingRef = useRef(false);
   const loadRequestIdRef = useRef(0);
   const currentIndexRef = useRef(0);
@@ -1093,7 +1119,9 @@ function FavoritesViewerInner() {
 
   // Preferences
   const [blacklist, setBlacklist] = useState(() => localStorage.getItem('blacklist_tags') || "");
+  useEffect(() => { persistSettings(); }, [blacklist]);
   const [gridColumns, setGridColumns] = useState(() => Number(localStorage.getItem('grid_columns') || 5));
+  useEffect(() => { persistSettings(); }, [gridColumns]);
   const [autoscroll, setAutoscroll] = useState(false);
   const [autoscrollSpeed, setAutoscrollSpeed] = useState(1);
 
@@ -1101,7 +1129,7 @@ function FavoritesViewerInner() {
   const [libraryDetailWidth, setLibraryDetailWidth] = useState(() =>
     Number(localStorage.getItem('library_detail_width') || 420)
   );
-
+  useEffect(() => { persistSettings(); }, [libraryDetailWidth]);
   // FurAffinity
   const [faCreds, setFaCreds] = useState<FACreds>({ a: '', b: '' });
   const [faStatus, setFaStatus] = useState<FASyncStatus | null>(null);
@@ -1162,6 +1190,7 @@ function FavoritesViewerInner() {
   const ext = (currentItem?.ext || "").toLowerCase();
   const isVideo = VIDEO_EXTENSIONS.includes(ext);
   const pendingTagSearchRef = useRef(false);
+  const credScreenDismissed = useRef(false);
 
   // Refs for loadData to avoid recreating it on every filter change
   const searchTagsRef = useRef(searchTags);
@@ -1387,7 +1416,8 @@ function FavoritesViewerInner() {
   const saveFeeds = useCallback((newFeeds: Feed[]) => {
     localStorage.setItem("e621_feeds", JSON.stringify(newFeeds));
     setFeeds(newFeeds);
-  }, []);
+    persistSettings();
+  }, [persistSettings]);
 
   const removeFeed = useCallback((feedId: number) => {
     saveFeeds(feeds.filter(f => f.id !== feedId));
@@ -1607,12 +1637,20 @@ if (loadingFeedsRef.current[feedId]) return;
     setPools([]);
     setSelectedPool(null);
     setPoolPosts([]);
+    // Clear credentials from previous library
+    setE621CredInfo({ username: null, has_api_key: false });
+    setApiUsername('');
+    setApiKey('');
+    setCredWarned(false);
+    credScreenDismissed.current = false;
+    // Re-fetch credentials from new library
+    await refreshE621CredInfo();
     await loadData(false);
     try {
       const cachedPools = await invoke<PoolInfo[]>("load_pools_cache");
       if (cachedPools?.length) setPools(cachedPools);
     } catch { /* no cache for new library */ }
-  }, [refreshLibraryRoot, loadData]);
+  }, [refreshLibraryRoot, loadData, refreshE621CredInfo]);
 
   const openExternalUrl = useCallback(async (url: string) => {
     try { await openUrl(url); } catch (e) { console.error("Failed to open URL:", e); toast("Failed to open link.", "error"); }
@@ -2126,13 +2164,30 @@ if (loadingFeedsRef.current[feedId]) return;
 
       setInitialLoading(true);
       try {
-        const cfg = await invoke<AppConfig>("get_config");
-        const root = cfg.library_root || "";
-        setLibraryRoot(root);
+      const cfg = await invoke<AppConfig>("get_config");
+      const root = cfg.library_root || "";
+      setLibraryRoot(root);
 
-        if (root) {
-          await loadData(false);
+      if (root) {
+        // Restore settings from library folder
+        try {
+          const settingsJson = await invoke<string>("load_app_settings");
+          const saved = JSON.parse(settingsJson || "{}");
+          if (saved["grid_columns"]) { setGridColumns(Number(saved["grid_columns"])); localStorage.setItem("grid_columns", saved["grid_columns"]); }
+          if (saved["preferred_sort_order"]) { setSortOrder(saved["preferred_sort_order"]); localStorage.setItem("preferred_sort_order", saved["preferred_sort_order"]); }
+          if (saved["items_per_page"]) { setItemsPerPage(Number(saved["items_per_page"])); localStorage.setItem("items_per_page", saved["items_per_page"]); }
+          if (saved["blacklist_tags"] !== undefined) { setBlacklist(saved["blacklist_tags"]); localStorage.setItem("blacklist_tags", saved["blacklist_tags"]); }
+          if (saved["feed_detail_width"]) { setFeedDetailWidth(Number(saved["feed_detail_width"])); localStorage.setItem("feed_detail_width", saved["feed_detail_width"]); }
+          if (saved["library_detail_width"]) { setLibraryDetailWidth(Number(saved["library_detail_width"])); localStorage.setItem("library_detail_width", saved["library_detail_width"]); }
+          if (saved["e621_feeds"]) { localStorage.setItem("e621_feeds", saved["e621_feeds"]); }
+        } catch (e) {
+          console.warn("Failed to restore settings from library:", e);
         }
+
+        await loadData(false);
+      } else {
+        setInitialLoading(false);
+      }
         
         loadFeeds();
         await refreshE621CredInfo();
@@ -2864,50 +2919,40 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       {lockChecked && !isLocked && !libraryRoot && !initialLoading && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#0f0f17] text-white">
           <div className="max-w-2xl px-8 text-center">
-            <div className="w-24 h-24 mx-auto mb-8 rounded-3xl bg-gradient-to-br from-[#967abc] to-[#6b4d8a] flex items-center justify-center">
-              <Database className="w-12 h-12 text-white" />
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full overflow-hidden">
+              <img src={iconUrl} alt="TailBurrow" className="w-full h-full object-cover" />
             </div>
-            <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-[#967abc] to-[#c9a3e8] bg-clip-text text-transparent">
+            <h1 className="text-2xl font-bold mb-2 bg-gradient-to-r from-[#967abc] to-[#c9a3e8] bg-clip-text text-transparent">
               Welcome to TailBurrow
             </h1>
-            <p className="text-lg text-[#9e98aa] mb-8 leading-relaxed">
-              Your personal e621, FurAffinity, and local media archive. Let's get started by setting up your library.
+            <p className="text-sm text-[#9e98aa] mb-4">
+              Your personal e621, FurAffinity, and local media archive.
             </p>
-            <div className="bg-[#161621] rounded-2xl border border-[#1d1b2d] p-8 mb-8 text-left">
-              <h2 className="text-xl font-semibold mb-6 text-[#967abc]">Quick Setup</h2>
-              <div className="space-y-4">
-                <div className="flex items-start gap-4">
-                  <div className="w-8 h-8 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <span className="text-[#967abc] font-bold">1</span>
+            <div className="bg-[#161621] rounded-xl border border-[#1d1b2d] p-4 mb-4 text-left">
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-6 h-6 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0">
+                    <span className="text-[#967abc] text-xs font-bold">1</span>
                   </div>
-                  <div>
-                    <h3 className="font-medium mb-1">Choose a Library Folder</h3>
-                    <p className="text-sm text-[#9e98aa]">Select an empty folder where TailBurrow will store your downloads and database.</p>
-                  </div>
+                  <span className="text-sm">Choose a Library Folder</span>
                 </div>
-                <div className="flex items-start gap-4">
-                  <div className="w-8 h-8 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <span className="text-[#967abc] font-bold">2</span>
+                <div className="flex items-center gap-3">
+                  <div className="w-6 h-6 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0">
+                    <span className="text-[#967abc] text-xs font-bold">2</span>
                   </div>
-                  <div>
-                    <h3 className="font-medium mb-1">Add e621 Credentials</h3>
-                    <p className="text-sm text-[#9e98aa]">Required for downloading favorites, searching feeds, and accessing the API.</p>
-                  </div>
+                  <span className="text-sm">Add e621 Credentials</span>
                 </div>
-                <div className="flex items-start gap-4">
-                  <div className="w-8 h-8 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <span className="text-[#967abc] font-bold">3</span>
+                <div className="flex items-center gap-3">
+                  <div className="w-6 h-6 rounded-full bg-[#967abc]/20 flex items-center justify-center flex-shrink-0">
+                    <span className="text-[#967abc] text-xs font-bold">3</span>
                   </div>
-                  <div>
-                    <h3 className="font-medium mb-1">Start Archiving</h3>
-                    <p className="text-sm text-[#9e98aa]">Sync your favorites, browse feeds, or import local files.</p>
-                  </div>
+                  <span className="text-sm">Start Archiving</span>
                 </div>
               </div>
             </div>
             <button
               onClick={changeLibraryRoot}
-              className="px-8 py-4 rounded-xl bg-[#967abc] hover:bg-[#967abc]/80 text-white font-semibold text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-[#967abc]/50"
+              className="px-6 py-2.5 rounded-xl bg-[#967abc] hover:bg-[#967abc]/80 text-white font-semibold transition-colors"
             >
               Choose Library Folder
             </button>
@@ -2917,12 +2962,12 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
       )}
 
       {/* e621 Credentials Required Screen */}
-      {lockChecked && !isLocked && !initialLoading && libraryRoot && !e621CredInfo.has_api_key && !showSettings && (
+      {lockChecked && !isLocked && !initialLoading && libraryRoot && !e621CredInfo.has_api_key && !showSettings && !credScreenDismissed.current && (
         <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-[#0f0f17] text-white">
           <div className="max-w-xl px-8">
             <div className="bg-[#161621] rounded-2xl border border-[#1d1b2d] p-8">
-              <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-[#967abc]/20 flex items-center justify-center">
-                <Shield className="w-8 h-8 text-[#967abc]" />
+              <div className="w-12 h-12 mx-auto mb-4 rounded-full overflow-hidden">
+                <img src={iconUrl} alt="TailBurrow" className="w-full h-full object-cover" />
               </div>
               <h2 className="text-2xl font-bold mb-4 text-center">e621 Credentials Required</h2>
               <p className="text-[#9e98aa] mb-6 text-center">
@@ -2964,9 +3009,8 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
               <div className="flex gap-3">
                 <button
                   onClick={() => {
-                    setShowSettings(true);
-                    setSettingsTab('credentials');
-                  }}
+                  credScreenDismissed.current = true;
+                }}
                   className="flex-1 px-4 py-3 rounded-xl bg-[#1d1b2d] hover:bg-[#4c4b5a] text-[#9e98aa] transition-colors text-sm"
                 >
                   Skip for Now
@@ -3460,28 +3504,14 @@ const shouldHideAutoscroll = showSettings || showEditModal || showTrashModal || 
                 </>
               ) : (
                 <div className="flex-1 flex items-center justify-center text-[#4c4b5a] min-h-[60vh]">
-                  {!libraryRoot ? (
-                    <div className="text-center animate-in fade-in zoom-in duration-300">
-                      <Database className="w-20 h-20 mx-auto mb-6 opacity-80 text-[#967abc]" />
-                      <h2 className="text-3xl font-bold text-white mb-3">Welcome!</h2>
-                      <p className="mb-8 max-w-md mx-auto text-[#9e98aa]">
-                        To get started, select a folder where your favorites will be stored.
-                        <br /><span className="text-sm opacity-75">(You can create a new empty folder or select an existing one)</span>
-                      </p>
-                      <button onClick={changeLibraryRoot} className="px-8 py-4 text-white rounded-xl font-bold text-lg shadow-lg transition-all transform hover:-translate-y-1 bg-[#967abc] hover:bg-[#967abc]/80 hover:shadow-[#967abc]/20">
-                        Select Library Folder
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="text-center">
-                      <Upload className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                      <p className="text-xl font-semibold text-gray-200">Library is Ready</p>
-                      <p className="text-sm mt-2 mb-6 text-[#9e98aa]">
-                        Your database is set up. Go to <b>Settings</b> to sync your favorites.
-                      </p>
-                      <button onClick={() => setShowSettings(true)} className="px-4 py-2 rounded-xl text-white transition-colors bg-[#1d1b2d] hover:bg-[#4c4b5a]">Open Settings</button>
-                    </div>
-                  )}
+                  <div className="text-center">
+                    <Upload className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                    <p className="text-xl font-semibold text-gray-200">Library is Ready</p>
+                    <p className="text-sm mt-2 mb-6 text-[#9e98aa]">
+                      Your database is set up. Go to <b>Settings</b> to sync your favorites.
+                    </p>
+                    <button onClick={() => setShowSettings(true)} className="px-4 py-2 rounded-xl text-white transition-colors bg-[#1d1b2d] hover:bg-[#4c4b5a]">Open Settings</button>
+                  </div>
                 </div>
               )}
             </div>
